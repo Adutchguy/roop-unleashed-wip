@@ -1,0 +1,16 @@
+clear_output: false
+force_cpu: false
+max_threads: 2
+memory_limit: 0
+output_image_format: png
+output_show_video: false
+output_template: '{file}_{timestamp}'
+output_video_codec: libx264
+output_video_format: mp4
+provider: cuda
+selected_theme: Default
+server_name: ''
+server_port: 0
+server_share: false
+use_os_temp_folder: false
+video_quality: 14

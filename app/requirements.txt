@@ -1,0 +1,13 @@
+numpy==1.24.2
+gradio==5.50.0
+fastapi
+opencv-python==4.9.0.80
+onnx==1.16.0
+insightface==0.7.3
+albucore==0.0.16
+psutil==5.9.6
+tqdm==4.66.4
+ftfy
+regex
+pyvirtualcam
+pydantic==2.10.6

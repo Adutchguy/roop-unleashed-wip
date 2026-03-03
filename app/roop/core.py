@@ -196,7 +196,9 @@ def start() -> None:
         # if 'face_enhancer' in roop.globals.frame_processors:
         #     roop.globals.selected_enhancer = 'GFPGAN'
        
-    batch_process_regular(None, False, None)
+    # FIX: was batch_process_regular(None, False, None) — only 3 args for a 10-param function.
+    # Headless mode is unsupported in this fork; log and fall through to UI launch.
+    print('Headless batch processing is not implemented - falling through to UI.')
 
 
 def get_processing_plugins(masking_engine):

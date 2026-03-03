@@ -49,8 +49,7 @@ class Enhance_DMDNet():
 
 
     def Release(self):
-        # FIX: was incorrectly referencing self.model_gfpgan (a copy-paste error),
-        # meaning the DMDNet model was never actually released and held VRAM indefinitely.
+        del self.model_dmdnet
         self.model_dmdnet = None
 
 

@@ -63,6 +63,7 @@ class Enhance_GFPGAN():
 
 
     def Release(self):
+        del self.model_gfpgan
         self.model_gfpgan = None
 
 

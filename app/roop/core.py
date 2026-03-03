@@ -122,8 +122,10 @@ def limit_resources() -> None:
 
 def release_resources() -> None:
     import gc
+    from roop.face_util import release_face_analyser
     global process_mgr
 
+    release_face_analyser()
     if process_mgr is not None:
         process_mgr.release_resources()
         process_mgr = None
@@ -390,6 +392,14 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             elapsed_time = time() - start_processing
             average_fps = (v.endframe - v.startframe) / elapsed_time
             update_status(f'\nProcessing {os.path.basename(destination)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
+            import gc
+            gc.collect()
+            try:
+                if torch.cuda.is_available():
+                    with torch.cuda.device(roop.globals.cuda_device_id):
+                        torch.cuda.empty_cache()
+            except Exception:
+                pass
     end_processing('Finished')
 
 

@@ -17,6 +17,14 @@ THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
 
 
+def release_face_analyser():
+    global FACE_ANALYSER
+    with THREAD_LOCK_ANALYSER:
+        if FACE_ANALYSER is not None:
+            del FACE_ANALYSER
+            FACE_ANALYSER = None
+
+
 def get_face_analyser() -> Any:
     global FACE_ANALYSER
 

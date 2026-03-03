@@ -60,4 +60,5 @@ class Enhance_GPEN():
 
 
     def Release(self):
+        del self.model_gpen
         self.model_gpen = None

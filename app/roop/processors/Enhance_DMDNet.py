@@ -19,13 +19,15 @@ THREAD_LOCK_DMDNET = threading.Lock()
 
 
 class Enhance_DMDNet():
-    plugin_options:dict = None
-    model_dmdnet = None
-    torchdevice = None
-
+    # FIX: processorname and type are intentionally class-level (read-only identity constants)
     processorname = 'dmdnet'
     type = 'enhance'
 
+    def __init__(self):
+        # FIX: moved mutable state to instance level (was class-level, shared across all instances)
+        self.plugin_options: dict = None
+        self.model_dmdnet = None
+        self.torchdevice = None
 
     def Initialize(self, plugin_options:dict):
         if self.plugin_options is not None:
@@ -47,6 +49,8 @@ class Enhance_DMDNet():
 
 
     def Release(self):
+        # FIX: was incorrectly referencing self.model_gfpgan (a copy-paste error),
+        # meaning the DMDNet model was never actually released and held VRAM indefinitely.
         self.model_dmdnet = None
 
 

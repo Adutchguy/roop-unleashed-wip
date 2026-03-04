@@ -82,8 +82,8 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
     return list_providers
     
 # Force GPU if available
-roop.globals.execution_providers = decode_execution_providers(['cuda'])
-print("Forced execution providers:", roop.globals.execution_providers)  # Debug
+# roop.globals.execution_providers = decode_execution_providers(['cuda'])
+# print("Forced execution providers:", roop.globals.execution_providers)  # Debug
 
 def suggest_max_memory() -> int:
     if platform.system().lower() == 'darwin':

@@ -1,4 +1,4 @@
-numpy==1.24.2
+numpy
 gradio==5.50.0
 fastapi
 opencv-python==4.9.0.80

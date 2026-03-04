@@ -9,7 +9,6 @@ import ui.globals as uii
 import ui.globals
 
 from ui.tabs.faceswap_tab import faceswap_tab
-from ui.tabs.livecam_tab import livecam_tab
 from ui.tabs.facemgr_tab import facemgr_tab
 from ui.tabs.extras_tab import extras_tab
 from ui.tabs.settings_tab import settings_tab
@@ -356,7 +355,6 @@ def run():
                     bt_save_session = gr.Button("💾 Save Settings", size='sm', variant='primary', scale=0)
                     bt_load_session = gr.Button("📂 Load Settings", size='sm', scale=0)
             bt_destfiles = faceswap_tab()
-            livecam_tab()
             facemgr_tab()
             extras_tab(bt_destfiles)
             settings_tab()

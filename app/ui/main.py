@@ -189,13 +189,13 @@ def run():
     /* General text */
     .block p, .block span, .block div { color: #ffffff !important; }
 
-    /* Inputs */
-    input:not([type=range]), textarea, select {
+    /* Inputs (text, number, etc – checkboxes/radios handled separately) */
+    input:not([type=range]):not([type=checkbox]):not([type=radio]), textarea, select {
         background: #2a623d !important;
         border: 1px solid #5d5d5d !important;
         color: #ffffff !important;
     }
-    input:not([type=range]):focus, textarea:focus {
+    input:not([type=range]):not([type=checkbox]):not([type=radio]):focus, textarea:focus {
         border-color: #aaaaaa !important;
         box-shadow: 0 0 0 3px rgba(170,170,170,0.25) !important;
         background: #2a623d !important;
@@ -266,12 +266,17 @@ def run():
     input[type=range]::-moz-range-thumb     { background: #aaaaaa !important; }
     input[type=range]::-webkit-slider-runnable-track { background: #1a472a !important; }
 
-    /* Checkboxes – explicitly styled for visibility */
+    /* Checkboxes – restore native rendering so checked state is always visible */
     input[type=checkbox] {
-        accent-color: #aaaaaa;
-        width: 16px;
-        height: 16px;
-        cursor: pointer;
+        appearance: auto !important;
+        -webkit-appearance: checkbox !important;
+        accent-color: #aaaaaa !important;
+        width: 16px !important;
+        height: 16px !important;
+        cursor: pointer !important;
+        background: unset !important;
+        border: unset !important;
+        box-shadow: none !important;
     }
     input[type=radio] { accent-color: #aaaaaa; }
 

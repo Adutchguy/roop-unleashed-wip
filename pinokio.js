@@ -2,7 +2,7 @@ const path = require('path')
 module.exports = {
   version: "3.7",
   title: "roop-unleashed",
-  description: "Uncensored Deepfakes for images and videos without training and an easy-to-use GUI.",
+  description: "Swap faces in photos and videos in seconds — no training required. Powered by InsightFace and ONNX, with optional TensorRT acceleration, multi-face targeting, enhancement pipelines, and a clean one-click interface.",
   icon: "icon.png",
   menu: async (kernel, info) => {
     let installed = info.exists("app/env")

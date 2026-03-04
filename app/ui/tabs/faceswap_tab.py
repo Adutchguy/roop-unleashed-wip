@@ -106,20 +106,20 @@ def faceswap_tab():
                                 step=0.01,
                                 interactive=True,
                             )
-                            mask_erosion = gr.Slider(
-                                1.0,
-                                3.0,
-                                value=roop.globals.CFG.mask_erosion,
-                                label="Erosion Iterations",
-                                step=1.00,
+                            face_mask_blend = gr.Slider(
+                                0,
+                                100,
+                                value=roop.globals.CFG.face_mask_blend,
+                                label="Face Mask Edge Blend",
+                                step=1,
                                 interactive=True,
                             )
-                            mask_blur = gr.Slider(
-                                10.0,
-                                50.0,
-                                value=roop.globals.CFG.mask_blur,
-                                label="Blur size",
-                                step=1.00,
+                            mouth_mask_blend = gr.Slider(
+                                0,
+                                30,
+                                value=roop.globals.CFG.mouth_mask_blend,
+                                label="Mouth Mask Edge Blend",
+                                step=1,
                                 interactive=True,
                             )
                             bt_toggle_masking = gr.Button(
@@ -230,8 +230,8 @@ def faceswap_tab():
     ui.globals.ui_mask_bottom = mask_bottom
     ui.globals.ui_mask_left = mask_left
     ui.globals.ui_mask_right = mask_right
-    ui.globals.ui_mask_erosion = mask_erosion
-    ui.globals.ui_mask_blur = mask_blur
+    ui.globals.ui_face_mask_blend = face_mask_blend
+    ui.globals.ui_mouth_mask_blend = mouth_mask_blend
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, maskimage, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale]
@@ -246,13 +246,15 @@ def faceswap_tab():
     bt_remove_selected_input_face.click(fn=remove_selected_input_face, outputs=[input_faces])
     bt_srcfiles.upload(fn=on_srcfile_changed, show_progress='full', inputs=bt_srcfiles, outputs=[dynamic_face_selection, face_selection, input_faces, bt_srcfiles])
 
-    mask_top.release(fn=on_mask_top_changed, inputs=[mask_top], show_progress='hidden')
-    mask_bottom.release(fn=on_mask_bottom_changed, inputs=[mask_bottom], show_progress='hidden')
-    mask_left.release(fn=on_mask_left_changed, inputs=[mask_left], show_progress='hidden')
-    mask_right.release(fn=on_mask_right_changed, inputs=[mask_right], show_progress='hidden')
-    mask_erosion.release(fn=on_mask_erosion_changed, inputs=[mask_erosion], show_progress='hidden')
-    mask_blur.release(fn=on_mask_blur_changed, inputs=[mask_blur], show_progress='hidden')
-    selected_mask_engine.change(fn=on_mask_engine_changed, inputs=[selected_mask_engine], outputs=[clip_text], show_progress='hidden')
+    mask_top.release(fn=on_mask_top_changed, inputs=[mask_top], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mask_bottom.release(fn=on_mask_bottom_changed, inputs=[mask_bottom], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mask_left.release(fn=on_mask_left_changed, inputs=[mask_left], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mask_right.release(fn=on_mask_right_changed, inputs=[mask_right], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    face_mask_blend.release(fn=on_face_mask_blend_changed, inputs=[face_mask_blend], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mouth_mask_blend.release(fn=on_mouth_mask_blend_changed, inputs=[mouth_mask_blend], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    chk_showmaskoffsets.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    chk_restoreoriginalmouth.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    selected_mask_engine.change(fn=on_mask_engine_changed, inputs=[selected_mask_engine], outputs=[clip_text], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
 
     target_faces.select(on_select_target_face, None, None)
     bt_remove_selected_target_face.click(fn=remove_selected_target_face, outputs=[target_faces])
@@ -303,10 +305,11 @@ def on_mask_left_changed(mask_offset):
 def on_mask_right_changed(mask_offset):
     set_mask_offset(3, mask_offset)
 
-def on_mask_erosion_changed(mask_offset):
-    set_mask_offset(4, mask_offset)
-def on_mask_blur_changed(mask_offset):
-    set_mask_offset(5, mask_offset)
+def on_face_mask_blend_changed(value):
+    set_mask_offset(4, value)
+
+def on_mouth_mask_blend_changed(value):
+    set_mask_offset(5, value)
 
 
 def set_mask_offset(index, mask_offset):
@@ -366,7 +369,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                     SELECTION_FACES_DATA = extract_face_images(filename,  (False, 0))
                     for f in SELECTION_FACES_DATA:
                         face = f[0]
-                        face.mask_offsets = (0,0,0,0,1,20)
+                        face.mask_offsets = [0,0,0,0,20.0,10.0]
                         face_set.faces.append(face)
                         if is_first: 
                             image = util.convert_to_gradio(f[1])
@@ -386,7 +389,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
             for f in SELECTION_FACES_DATA:
                 face_set = FaceSet()
                 face = f[0]
-                face.mask_offsets = (0,0,0,0,1,20)
+                face.mask_offsets = [0,0,0,0,20.0,10.0]
                 face_set.faces.append(face)
                 image = util.convert_to_gradio(f[1])
                 ui.globals.ui_input_thumbs.append(image)
@@ -525,7 +528,7 @@ def on_selected_face():
     image = util.convert_to_gradio(fd[1])
     if IS_INPUT:
         face_set = FaceSet()
-        fd[0].mask_offsets = (0,0,0,0,1,20)
+        fd[0].mask_offsets = [0,0,0,0,20.0,10.0]
         face_set.faces.append(fd[0])
         roop.globals.INPUT_FACESETS.append(face_set)
         ui.globals.ui_input_thumbs.append(image)
@@ -548,10 +551,10 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     from roop.core import live_swap, get_processing_plugins
 
     manual_masking = False
-    mask_offsets = (0,0,0,0)
+    mask_offsets = [0,0,0,0,20.0,10.0]
     if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
         if not hasattr(roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0], 'mask_offsets'):
-            roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = mask_offsets
+            roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = list(mask_offsets)
         mask_offsets = roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
 
     timeinfo = '0:00:00'

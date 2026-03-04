@@ -481,7 +481,7 @@ _SESSION_CFG_KEYS = [
     'vr_mode', 'autorotate_faces', 'skip_audio', 'keep_frames', 'wait_after_extraction',
     'output_method', 'mask_engine', 'mask_clip_text', 'show_mask_offsets',
     'restore_original_mouth', 'mask_top', 'mask_bottom', 'mask_left', 'mask_right',
-    'mask_erosion', 'mask_blur',
+    'face_mask_blend', 'mouth_mask_blend',
 ]
 
 
@@ -509,8 +509,8 @@ def _session_components():
         ui.globals.ui_mask_bottom,
         ui.globals.ui_mask_left,
         ui.globals.ui_mask_right,
-        ui.globals.ui_mask_erosion,
-        ui.globals.ui_mask_blur,
+        ui.globals.ui_face_mask_blend,
+        ui.globals.ui_mouth_mask_blend,
     ]
 
 

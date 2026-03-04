@@ -244,7 +244,7 @@ def faceswap_tab():
     bt_move_right_target.click(fn=move_selected_target, inputs=[bt_move_right_target], outputs=[target_faces])
 
     bt_remove_selected_input_face.click(fn=remove_selected_input_face, outputs=[input_faces])
-    bt_srcfiles.change(fn=on_srcfile_changed, show_progress='full', inputs=bt_srcfiles, outputs=[dynamic_face_selection, face_selection, input_faces, bt_srcfiles])
+    bt_srcfiles.upload(fn=on_srcfile_changed, show_progress='full', inputs=bt_srcfiles, outputs=[dynamic_face_selection, face_selection, input_faces, bt_srcfiles])
 
     mask_top.release(fn=on_mask_top_changed, inputs=[mask_top], show_progress='hidden')
     mask_bottom.release(fn=on_mask_bottom_changed, inputs=[mask_bottom], show_progress='hidden')

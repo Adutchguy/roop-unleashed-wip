@@ -238,8 +238,8 @@ def get_device() -> str:
     prov = roop.globals.execution_providers[0]
     if "CoreMLExecutionProvider" in prov:
         return "mps"
-    if "CUDAExecutionProvider" in prov or "ROCMExecutionProvider" in prov:
-        print("Using GPU (cuda/rocm) for acceleration!")  # Debug
+    if "CUDAExecutionProvider" in prov or "ROCMExecutionProvider" in prov or "TensorrtExecutionProvider" in prov:
+        print("Using GPU (cuda/rocm/tensorrt) for acceleration!")  # Debug
         return "cuda"
     if "OpenVINOExecutionProvider" in prov:
         return "mkl"

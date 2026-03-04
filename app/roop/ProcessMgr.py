@@ -539,8 +539,8 @@ class ProcessMgr():
             result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets)
 
         if self.options.restore_original_mouth:
-            mouth_cutout, mouth_bb = self.create_mouth_mask(target_face, frame)
-            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb)
+            mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame)
+            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon)
 
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
@@ -681,31 +681,44 @@ class ProcessMgr():
 
     def create_mouth_mask(self, face:Face, frame:Frame):
         mouth_cutout = None
+        mouth_mask_points = None
+        # Initialize so the return is always safe even when landmarks is absent
+        min_x, min_y, max_x, max_y = 0, 0, 0, 0
         landmarks = face.landmark_2d_106
         if landmarks is not None:
             mouth_points = landmarks[52:71].astype(np.int32)
-            min_x, min_y = np.min(mouth_points, axis=0)
-            max_x, max_y = np.max(mouth_points, axis=0)
-            min_x = max(0, min_x - (15 * 6))
-            min_y = max(0, min_y - 22)
-            max_x = min(frame.shape[1], max_x + (15 * 6))
-            max_y = min(frame.shape[0], max_y + (90 * 6))
+            raw_min_x, raw_min_y = np.min(mouth_points, axis=0)
+            raw_max_x, raw_max_y = np.max(mouth_points, axis=0)
+            mouth_w = max(1, raw_max_x - raw_min_x)
+            mouth_h = max(1, raw_max_y - raw_min_y)
+            # Proportional padding instead of hardcoded magic numbers
+            pad_x     = int(mouth_w * 0.4)
+            pad_top   = int(mouth_h * 0.35)
+            pad_bottom = int(mouth_h * 0.5)
+            min_x = max(0, raw_min_x - pad_x)
+            min_y = max(0, raw_min_y - pad_top)
+            max_x = min(frame.shape[1], raw_max_x + pad_x)
+            max_y = min(frame.shape[0], raw_max_y + pad_bottom)
             mouth_cutout = frame[min_y:max_y, min_x:max_x].copy()
-        return mouth_cutout, (min_x, min_y, max_x, max_y)
+            # Landmark points in cutout-local coordinates for polygon masking
+            mouth_mask_points = mouth_points - np.array([min_x, min_y], dtype=np.int32)
+        return mouth_cutout, (min_x, min_y, max_x, max_y), mouth_mask_points
 
     def create_feathered_mask(self, shape, feather_amount=30):
         mask = np.zeros(shape[:2], dtype=np.float32)
         center = (shape[1] // 2, shape[0] // 2)
-        cv2.ellipse(mask, center, (shape[1] // 2 - feather_amount, shape[0] // 2 - feather_amount),
-                    0, 0, 360, 1, -1)
+        # Clamp axes to at least 1 so OpenCV never receives a non-positive value
+        axes = (max(1, shape[1] // 2 - feather_amount), max(1, shape[0] // 2 - feather_amount))
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 1, -1)
         mask = cv2.GaussianBlur(mask, (feather_amount * 2 + 1, feather_amount * 2 + 1), 0)
-        return mask / np.max(mask)
+        max_val = np.max(mask)
+        return mask / max_val if max_val > 0 else mask
 
-    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple) -> np.ndarray:
+    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None) -> np.ndarray:
         min_x, min_y, max_x, max_y = mouth_box
         box_width = max_x - min_x
         box_height = max_y - min_y
-        if mouth_cutout is None or box_width is None or box_height is None:
+        if mouth_cutout is None or box_width <= 0 or box_height <= 0:
             return frame
         try:
             resized_mouth_cutout = cv2.resize(mouth_cutout, (box_width, box_height))
@@ -713,14 +726,29 @@ class ProcessMgr():
             if roi.shape != resized_mouth_cutout.shape:
                 resized_mouth_cutout = cv2.resize(resized_mouth_cutout, (roi.shape[1], roi.shape[0]))
             color_corrected_mouth = self.apply_color_transfer(resized_mouth_cutout, roi)
-            feather_amount = min(30, box_width // 15, box_height // 15)
-            mask = self.create_feathered_mask(resized_mouth_cutout.shape, feather_amount)
+            feather_amount = max(1, min(30, box_width // 15, box_height // 15))
+
+            if mouth_polygon is not None:
+                # Scale polygon from original cutout coords to the resized box
+                scale_x = box_width  / max(1, mouth_cutout.shape[1])
+                scale_y = box_height / max(1, mouth_cutout.shape[0])
+                scaled_pts = (mouth_polygon * [scale_x, scale_y]).astype(np.int32)
+                hull = cv2.convexHull(scaled_pts)
+                mask = np.zeros(resized_mouth_cutout.shape[:2], dtype=np.float32)
+                cv2.fillConvexPoly(mask, hull, 1.0)
+                ksize = feather_amount * 2 + 1
+                mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
+                max_val = np.max(mask)
+                if max_val > 0:
+                    mask = mask / max_val
+            else:
+                mask = self.create_feathered_mask(resized_mouth_cutout.shape, feather_amount)
+
             mask = mask[:, :, np.newaxis]
             blended = (color_corrected_mouth * mask + roi * (1 - mask)).astype(np.uint8)
             frame[min_y:max_y, min_x:max_x] = blended
         except Exception as e:
-            print(f'Error {e}')
-            pass
+            print(f'Error in apply_mouth_area: {e}')
         return frame
 
     def apply_color_transfer(self, source, target):

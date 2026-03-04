@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 import warnings
 import gradio as gr
@@ -36,7 +37,7 @@ def run():
     prepare_environment()
 
     set_display_ui(show_msg)
-    if roop.globals.CFG.provider == "cuda" and util.has_cuda_device() == False:
+    if roop.globals.CFG.provider in ("cuda", "tensorrt") and util.has_cuda_device() == False:
        roop.globals.CFG.provider = "cpu"
 
     roop.globals.execution_providers = decode_execution_providers([roop.globals.CFG.provider])
@@ -49,299 +50,388 @@ def run():
     run_server = True
     uii.ui_restart_server = False
     mycss = """
-    /* ── Dark Forest Theme ───────────────────────────────────────────────────
-       #000000  black       – page / body background
-       #1a472a  dark-green  – block / panel backgrounds, tab bar, header
-       #2a623d  mid-green   – secondary panels, inputs, hover surfaces
-       #5d5d5d  gray        – borders, dividers, tracks
-       #aaaaaa  light-gray  – muted / secondary text
-       Text:    #ffffff on all dark surfaces
-    ──────────────────────────────────────────────────────────────────────── */
+    /* ════════════════════════════════════════════════════════════════════════
+       CARBON DARK  –  roop-unleashed UI theme
+       Surface scale (deep → elevated):
+         #0d0d0d  page / body
+         #151515  app container
+         #1c1c1c  block / card surfaces
+         #242424  nested panels, accordions
+         #2c2c2c  input fields, dropdowns
+         #383838  borders
+         #484848  hover borders / muted separators
+       Text:
+         #eeeeee  primary   |  #999999  labels/hints  |  #555555  placeholders
+       Accent (emerald):
+         #50a070  focus ring / active indicator
+         #3d8059  primary button fill
+         #2e6645  primary button hover
+       Danger:
+         #7a2020  stop/cancel fill  |  #9a2a2a  hover
+    ════════════════════════════════════════════════════════════════════════ */
 
     :root, .dark {
         color-scheme: dark !important;
 
-        /* accent / links */
-        --color-accent:                            #aaaaaa;
-        --color-accent-soft:                       rgba(170,170,170,0.20);
-        --border-color-accent:                     #aaaaaa;
-        --border-color-primary:                    #5d5d5d;
-        --link-text-color:                         #aaaaaa;
-        --link-text-color-hover:                   #ffffff;
-        --link-text-color-active:                  #ffffff;
-        --link-text-color-visited:                 #aaaaaa;
+        --color-accent:                            #50a070;
+        --color-accent-soft:                       rgba(80,160,112,0.15);
+        --border-color-accent:                     #50a070;
+        --border-color-primary:                    #383838;
 
-        /* page backgrounds */
-        --body-background-fill:                    #000000;
-        --background-fill-primary:                 #1a472a;
-        --background-fill-secondary:               #2a623d;
+        --link-text-color:                         #50a070;
+        --link-text-color-hover:                   #6dba8a;
+        --link-text-color-active:                  #6dba8a;
+        --link-text-color-visited:                 #3d8059;
 
-        /* blocks */
-        --block-background-fill:                   #1a472a;
-        --block-border-color:                      #5d5d5d;
+        --body-background-fill:                    #0d0d0d;
+        --background-fill-primary:                 #1c1c1c;
+        --background-fill-secondary:               #242424;
+
+        --block-background-fill:                   #1c1c1c;
+        --block-border-color:                      #383838;
         --block-border-width:                      1px;
-        --block-label-background-fill:             #000000;
-        --block-label-text-color:                  #aaaaaa;
-        --block-title-text-color:                  #ffffff;
-        --block-info-text-color:                   #aaaaaa;
+        --block-label-background-fill:             #151515;
+        --block-label-text-color:                  #999999;
+        --block-title-text-color:                  #eeeeee;
+        --block-info-text-color:                   #999999;
         --block-radius:                            8px;
 
-        /* panels */
-        --panel-background-fill:                   #1a472a;
-        --panel-border-color:                      #5d5d5d;
+        --panel-background-fill:                   #242424;
+        --panel-border-color:                      #383838;
 
-        /* inputs */
-        --input-background-fill:                   #2a623d;
-        --input-background-fill-focus:             #2a623d;
-        --input-border-color:                      #5d5d5d;
-        --input-border-color-focus:                #aaaaaa;
-        --input-border-color-hover:                #aaaaaa;
+        --input-background-fill:                   #2c2c2c;
+        --input-background-fill-focus:             #323232;
+        --input-border-color:                      #383838;
+        --input-border-color-focus:                #50a070;
+        --input-border-color-hover:                #484848;
         --input-shadow:                            none;
-        --input-shadow-focus:                      0 0 0 3px rgba(170,170,170,0.25);
-        --input-placeholder-color:                 #5d5d5d;
-        --input-text-color:                        #ffffff;
+        --input-shadow-focus:                      0 0 0 3px rgba(80,160,112,0.22);
+        --input-placeholder-color:                 #555555;
+        --input-text-color:                        #eeeeee;
+        --input-radius:                            6px;
 
-        /* primary buttons */
-        --button-primary-background-fill:          #2a623d;
-        --button-primary-background-fill-hover:    #1a472a;
-        --button-primary-text-color:               #ffffff;
-        --button-primary-border-color:             #5d5d5d;
-        --button-primary-border-color-hover:       #aaaaaa;
-        --button-primary-shadow:                   none;
-        --button-primary-shadow-hover:             0 2px 8px rgba(170,170,170,0.20);
+        --button-primary-background-fill:          #3d8059;
+        --button-primary-background-fill-hover:    #2e6645;
+        --button-primary-text-color:               #f0f0f0;
+        --button-primary-border-color:             #3d8059;
+        --button-primary-border-color-hover:       #2e6645;
+        --button-primary-shadow:                   0 1px 4px rgba(0,0,0,0.4);
+        --button-primary-shadow-hover:             0 4px 14px rgba(61,128,89,0.4);
 
-        /* secondary buttons */
-        --button-secondary-background-fill:        #1a472a;
-        --button-secondary-background-fill-hover:  #2a623d;
-        --button-secondary-text-color:             #aaaaaa;
-        --button-secondary-border-color:           #5d5d5d;
-        --button-secondary-border-color-hover:     #aaaaaa;
+        --button-secondary-background-fill:        #242424;
+        --button-secondary-background-fill-hover:  #2c2c2c;
+        --button-secondary-text-color:             #bbbbbb;
+        --button-secondary-border-color:           #383838;
+        --button-secondary-border-color-hover:     #484848;
 
-        /* stop/cancel buttons */
-        --button-cancel-background-fill:           #5a1a1a;
-        --button-cancel-background-fill-hover:     #7a2a2a;
-        --button-cancel-text-color:                #ffffff;
-        --button-cancel-border-color:              #5a1a1a;
+        --button-cancel-background-fill:           #7a2020;
+        --button-cancel-background-fill-hover:     #9a2a2a;
+        --button-cancel-text-color:                #f0f0f0;
+        --button-cancel-border-color:              #7a2020;
 
-        /* checkboxes – high-visibility on dark background */
-        --checkbox-background-color:               #2a623d;
-        --checkbox-background-color-focus:         #2a623d;
-        --checkbox-background-color-selected:      #aaaaaa;
-        --checkbox-background-color-hover:         #2a623d;
-        --checkbox-border-color:                   #aaaaaa;
-        --checkbox-border-color-focus:             #ffffff;
-        --checkbox-border-color-selected:          #ffffff;
-        --checkbox-border-color-hover:             #ffffff;
+        --checkbox-background-color:               #2c2c2c;
+        --checkbox-background-color-focus:         #323232;
+        --checkbox-background-color-selected:      #3d8059;
+        --checkbox-background-color-hover:         #323232;
+        --checkbox-border-color:                   #484848;
+        --checkbox-border-color-focus:             #50a070;
+        --checkbox-border-color-selected:          #50a070;
+        --checkbox-border-color-hover:             #50a070;
         --checkbox-label-background-fill:          transparent;
-        --checkbox-label-background-fill-hover:    rgba(170,170,170,0.10);
-        --checkbox-label-background-fill-selected: rgba(170,170,170,0.15);
-        --checkbox-label-text-color:               #ffffff;
+        --checkbox-label-background-fill-hover:    rgba(80,160,112,0.07);
+        --checkbox-label-background-fill-selected: rgba(80,160,112,0.12);
+        --checkbox-label-text-color:               #eeeeee;
 
-        /* slider */
-        --slider-color:                            #aaaaaa;
+        --slider-color:                            #50a070;
 
-        /* table */
-        --table-odd-background-fill:               #1a472a;
-        --table-even-background-fill:              #2a623d;
-        --table-row-focus:                         rgba(170,170,170,0.10);
+        --table-odd-background-fill:               #181818;
+        --table-even-background-fill:              #202020;
+        --table-row-focus:                         rgba(80,160,112,0.08);
 
-        /* shadows */
-        --shadow-drop:                             0 1px 4px rgba(0,0,0,0.60);
-        --shadow-drop-lg:                          0 4px 16px rgba(0,0,0,0.70);
-        --shadow-inset:                            inset 0 1px 3px rgba(0,0,0,0.50);
+        --shadow-drop:                             0 2px 8px rgba(0,0,0,0.55);
+        --shadow-drop-lg:                          0 6px 24px rgba(0,0,0,0.65);
+        --shadow-inset:                            inset 0 1px 3px rgba(0,0,0,0.45);
 
-        /* neutral scale */
-        --neutral-50:  #ffffff;
-        --neutral-100: #aaaaaa;
-        --neutral-200: #5d5d5d;
-        --neutral-300: #5d5d5d;
-        --neutral-400: #5d5d5d;
-        --neutral-500: #2a623d;
-        --neutral-600: #1a472a;
-        --neutral-700: #1a472a;
-        --neutral-800: #000000;
-        --neutral-900: #000000;
-        --neutral-950: #000000;
+        --neutral-50:  #f5f5f5;
+        --neutral-100: #eeeeee;
+        --neutral-200: #bbbbbb;
+        --neutral-300: #999999;
+        --neutral-400: #666666;
+        --neutral-500: #484848;
+        --neutral-600: #383838;
+        --neutral-700: #2c2c2c;
+        --neutral-800: #242424;
+        --neutral-900: #1c1c1c;
+        --neutral-950: #0d0d0d;
     }
 
-    /* ── Direct element overrides ── */
-
-    html, body { background-color: #000000 !important; color: #ffffff !important; }
+    /* ── Page & container ── */
+    html, body { background: #0d0d0d !important; color: #eeeeee !important; }
     .gradio-container, .gradio-container.dark {
-        background: #000000 !important;
-        color: #ffffff !important;
+        background: #0d0d0d !important;
+        color: #eeeeee !important;
+        max-width: 100% !important;
     }
 
-    /* Blocks / panels */
-    .block, .panel, fieldset, .form, .gap, .contain, .tabs {
-        background: #1a472a !important;
-        border: 1px solid #5d5d5d !important;
-        color: #ffffff !important;
+    /* ── Blocks / cards ── */
+    .block, .panel, fieldset, .form {
+        background: #1c1c1c !important;
+        border: 1px solid #383838 !important;
+        border-radius: 8px !important;
+        color: #eeeeee !important;
+        transition: border-color 0.15s ease !important;
     }
+    .block:hover { border-color: #484848 !important; }
+    .gap, .contain, .tabs { background: #151515 !important; border: none !important; }
 
-    /* Block labels */
-    .block-label, .block > .label-wrap, .block > label > span,
-    label span, .block .label-wrap span {
-        color: #aaaaaa !important;
+    /* ── Labels & text ── */
+    .block-label, .block > .label-wrap > span,
+    .block > label > span, label > span {
+        color: #999999 !important;
+        font-size: 0.78rem !important;
+        letter-spacing: 0.04em !important;
+        text-transform: uppercase !important;
     }
+    .block p, .block h1, .block h2, .block h3 { color: #eeeeee !important; }
+    .block span { color: #eeeeee !important; }
+    .block div  { color: #eeeeee !important; }
+    .block .info, .block .description { color: #999999 !important; font-size: 0.82rem !important; }
 
-    /* General text */
-    .block p, .block span, .block div { color: #ffffff !important; }
-
-    /* Inputs (text, number, etc – checkboxes/radios handled separately) */
+    /* ── Inputs ── */
     input:not([type=range]):not([type=checkbox]):not([type=radio]), textarea, select {
-        background: #2a623d !important;
-        border: 1px solid #5d5d5d !important;
-        color: #ffffff !important;
+        background: #2c2c2c !important;
+        border: 1px solid #383838 !important;
+        border-radius: 6px !important;
+        color: #eeeeee !important;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.12s ease !important;
     }
-    input:not([type=range]):not([type=checkbox]):not([type=radio]):focus, textarea:focus {
-        border-color: #aaaaaa !important;
-        box-shadow: 0 0 0 3px rgba(170,170,170,0.25) !important;
-        background: #2a623d !important;
+    input:not([type=range]):not([type=checkbox]):not([type=radio]):hover,
+    textarea:hover, select:hover { border-color: #484848 !important; }
+    input:not([type=range]):not([type=checkbox]):not([type=radio]):focus,
+    textarea:focus {
+        border-color: #50a070 !important;
+        box-shadow: 0 0 0 3px rgba(80,160,112,0.20) !important;
+        background: #323232 !important;
+        outline: none !important;
     }
-    ::placeholder { color: #5d5d5d !important; opacity: 1; }
+    ::placeholder { color: #555555 !important; opacity: 1; }
 
-    /* Dropdowns / option lists */
-    .wrap, ul.options, .dropdown-arrow {
-        background: #2a623d !important;
-        border: 1px solid #5d5d5d !important;
-        color: #ffffff !important;
+    /* ── Dropdowns ── */
+    .wrap, ul.options {
+        background: #2c2c2c !important;
+        border: 1px solid #383838 !important;
+        border-radius: 6px !important;
+        color: #eeeeee !important;
     }
-    ul.options li { color: #ffffff !important; background: #2a623d !important; }
-    ul.options li:hover, ul.options li.selected {
-        background: #1a472a !important;
-        color: #ffffff !important;
+    ul.options { border-radius: 0 0 6px 6px !important; }
+    ul.options li {
+        color: #eeeeee !important;
+        background: #2c2c2c !important;
+        padding: 6px 10px !important;
+        transition: background 0.1s ease !important;
     }
+    ul.options li:hover    { background: #3d8059 !important; color: #f0f0f0 !important; }
+    ul.options li.selected { background: #2e6645 !important; color: #f0f0f0 !important; }
 
-    /* File upload / drop zones */
-    .upload-container, .file-preview, .drop-container {
-        background: #1a472a !important;
-        border: 2px dashed #5d5d5d !important;
-        color: #aaaaaa !important;
+    /* ── Buttons ── */
+    button {
+        border-radius: 6px !important;
+        font-weight: 500 !important;
+        transition: background 0.12s ease, border-color 0.12s ease,
+                    box-shadow 0.12s ease, transform 0.1s ease !important;
+        cursor: pointer !important;
     }
-    .drop-container:hover { border-color: #aaaaaa !important; }
+    button:hover  { transform: translateY(-1px) !important; }
+    button:active { transform: translateY(0px)  !important; }
 
-    /* Gallery */
-    .gallery, .gallery-container, .grid-container { background: #1a472a !important; }
-    .gallery-item, .thumbnail-item { border: 1px solid #5d5d5d !important; }
-    .gallery-item:hover, .thumbnail-item:hover {
-        border-color: #aaaaaa !important;
-        box-shadow: 0 0 0 2px rgba(170,170,170,0.30) !important;
-    }
-
-    /* Buttons – primary */
     button.primary, .btn-primary {
-        background: #2a623d !important;
-        border-color: #5d5d5d !important;
-        color: #ffffff !important;
+        background: #3d8059 !important;
+        border-color: #3d8059 !important;
+        color: #f0f0f0 !important;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.4) !important;
     }
     button.primary:hover, .btn-primary:hover {
-        background: #1a472a !important;
-        border-color: #aaaaaa !important;
+        background: #2e6645 !important;
+        border-color: #2e6645 !important;
+        box-shadow: 0 4px 14px rgba(61,128,89,0.38) !important;
     }
-
-    /* Buttons – secondary */
     button.secondary, .btn-secondary {
-        background: #1a472a !important;
-        border-color: #5d5d5d !important;
-        color: #aaaaaa !important;
+        background: #242424 !important;
+        border-color: #383838 !important;
+        color: #bbbbbb !important;
     }
     button.secondary:hover, .btn-secondary:hover {
-        background: #2a623d !important;
-        border-color: #aaaaaa !important;
-        color: #ffffff !important;
+        background: #2c2c2c !important;
+        border-color: #484848 !important;
+        color: #eeeeee !important;
     }
-
-    /* Buttons – stop / cancel */
     button.stop, button.cancel, .btn-cancel {
-        background: #5a1a1a !important;
-        border-color: #5a1a1a !important;
-        color: #ffffff !important;
+        background: #7a2020 !important;
+        border-color: #7a2020 !important;
+        color: #f0f0f0 !important;
+    }
+    button.stop:hover, button.cancel:hover, .btn-cancel:hover {
+        background: #9a2a2a !important;
+        border-color: #9a2a2a !important;
     }
 
-    /* Sliders */
-    input[type=range] { accent-color: #aaaaaa; }
-    input[type=range]::-webkit-slider-thumb { background: #aaaaaa !important; }
-    input[type=range]::-moz-range-thumb     { background: #aaaaaa !important; }
-    input[type=range]::-webkit-slider-runnable-track { background: #1a472a !important; }
+    /* ── Sliders ── */
+    input[type=range] { accent-color: #50a070; }
+    input[type=range]::-webkit-slider-thumb {
+        background: #50a070 !important;
+        transition: transform 0.1s ease !important;
+    }
+    input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.25) !important; }
+    input[type=range]::-moz-range-thumb            { background: #50a070 !important; }
+    input[type=range]::-webkit-slider-runnable-track { background: #2c2c2c !important; }
 
-    /* Checkboxes – restore native rendering so checked state is always visible */
+    /* ── Checkboxes – native rendering for reliable checked state ── */
     input[type=checkbox] {
         appearance: auto !important;
         -webkit-appearance: checkbox !important;
-        accent-color: #aaaaaa !important;
+        accent-color: #50a070 !important;
         width: 16px !important;
         height: 16px !important;
         cursor: pointer !important;
         background: unset !important;
         border: unset !important;
         box-shadow: none !important;
+        transition: transform 0.1s ease !important;
     }
-    input[type=radio] { accent-color: #aaaaaa; }
+    input[type=checkbox]:hover { transform: scale(1.1) !important; }
+    input[type=radio]  { accent-color: #50a070; }
 
-    /* Header row */
+    /* ── Upload / drop zones ── */
+    .upload-container, .file-preview, .drop-container {
+        background: #1c1c1c !important;
+        border: 2px dashed #383838 !important;
+        border-radius: 8px !important;
+        color: #999999 !important;
+        transition: border-color 0.15s ease, background 0.15s ease !important;
+    }
+    .drop-container:hover {
+        border-color: #50a070 !important;
+        background: rgba(80,160,112,0.04) !important;
+    }
+
+    /* ── Gallery ── */
+    .gallery, .gallery-container, .grid-container { background: #181818 !important; }
+    .gallery-item, .thumbnail-item {
+        border: 1px solid #383838 !important;
+        border-radius: 6px !important;
+        overflow: hidden !important;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease !important;
+    }
+    .gallery-item:hover, .thumbnail-item:hover {
+        border-color: #50a070 !important;
+        box-shadow: 0 4px 16px rgba(80,160,112,0.25) !important;
+        transform: translateY(-2px) !important;
+    }
+
+    /* ── Header bar ── */
     .compact {
-        background: #000000 !important;
-        border-bottom: 1px solid #5d5d5d !important;
+        background: #111111 !important;
+        border-bottom: 1px solid #272727 !important;
+        padding: 6px 12px !important;
     }
 
-    /* Tab bar */
-    .tab-nav { background: #000000 !important; border-bottom-color: #5d5d5d !important; }
+    /* ── Tab bar ── */
+    .tab-nav {
+        background: #111111 !important;
+        border-bottom: 1px solid #272727 !important;
+        padding: 0 4px !important;
+    }
     .tab-nav button {
-        color: #aaaaaa !important;
-        font-weight: 500;
+        color: #888888 !important;
         background: transparent !important;
+        border: none !important;
+        border-bottom: 2px solid transparent !important;
+        border-radius: 0 !important;
+        padding: 10px 18px !important;
+        font-weight: 500 !important;
+        transform: none !important;
+        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease !important;
     }
     .tab-nav button:hover {
-        color: #ffffff !important;
-        background: rgba(170,170,170,0.10) !important;
+        color: #cccccc !important;
+        background: rgba(255,255,255,0.04) !important;
+        border-bottom-color: #484848 !important;
+        transform: none !important;
     }
     .tab-nav button.selected {
-        color: #ffffff !important;
-        border-bottom: 2px solid #aaaaaa !important;
+        color: #f0f0f0 !important;
+        border-bottom: 2px solid #50a070 !important;
         font-weight: 700 !important;
-        background: rgba(170,170,170,0.15) !important;
+        background: rgba(80,160,112,0.07) !important;
+        transform: none !important;
     }
 
-    /* Accordion headers */
+    /* ── Accordion headers ── */
     .label-wrap {
-        background: #000000 !important;
-        border: 1px solid #5d5d5d !important;
+        background: #242424 !important;
+        border: 1px solid #383838 !important;
         border-radius: 6px !important;
+        cursor: pointer !important;
+        transition: background 0.12s ease, border-color 0.12s ease !important;
     }
-    .label-wrap:hover { background: #1a472a !important; }
-    .label-wrap span  { color: #ffffff !important; }
+    .label-wrap:hover { background: #2c2c2c !important; border-color: #484848 !important; }
+    .label-wrap span  { color: #eeeeee !important; font-weight: 500 !important; }
 
-    /* Scrollbars */
-    ::-webkit-scrollbar { width: 7px; height: 7px; }
-    ::-webkit-scrollbar-track { background: #1a472a; }
-    ::-webkit-scrollbar-thumb { background: #5d5d5d; border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: #aaaaaa; }
+    /* ── Scrollbars ── */
+    ::-webkit-scrollbar       { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #181818; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: #383838; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #50a070; }
 
-    /* Progress / generating */
-    .progress-bar { background-color: #aaaaaa !important; }
-    .generating    { border-color: #aaaaaa !important; }
+    /* ── Progress / generating ── */
+    .progress-bar {
+        background: linear-gradient(90deg, #3d8059, #50a070) !important;
+        border-radius: 3px !important;
+    }
+    .generating { border-color: #50a070 !important; }
 
-    /* Toast notifications */
-    .toast-wrap  { background: #1a472a !important; border-color: #5d5d5d !important; }
-    .toast-title { color: #ffffff !important; }
-    .toast-text  { color: #aaaaaa !important; }
+    /* ── Toasts ── */
+    .toast-wrap {
+        background: #1c1c1c !important;
+        border: 1px solid #383838 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.55) !important;
+    }
+    .toast-title { color: #eeeeee !important; font-weight: 600 !important; }
+    .toast-text  { color: #999999 !important; }
 
-    /* Markdown / prose */
-    .prose, .prose p, .prose li { color: #ffffff !important; }
-    .prose a { color: #aaaaaa !important; }
-    .prose a:hover { color: #ffffff !important; }
+    /* ── Markdown / prose ── */
+    .prose, .prose p, .prose li { color: #eeeeee !important; }
+    .prose a       { color: #50a070 !important; }
+    .prose a:hover { color: #6dba8a !important; }
+    .prose code {
+        background: #2c2c2c !important;
+        border: 1px solid #383838 !important;
+        border-radius: 4px !important;
+        color: #6dba8a !important;
+        padding: 1px 5px !important;
+    }
 
-    /* ── preserved rules ── */
-    span {color: var(--block-info-text-color)}
+    /* ── Preserved layout rules ── */
+    span { color: var(--block-info-text-color) }
     #fixedheight {
         max-height: 238.4px;
         overflow-y: auto !important;
     }
-    .image-container.svelte-1l6wqyv {height: 100%}
+    .image-container.svelte-1l6wqyv { height: 100% }
     """
 
     while run_server:
+        # Clean Gradio temp dir on each (re)start to prevent asyncio event loop
+        # mismatch errors caused by stale asyncio.locks.Event objects from a
+        # previous server instance referencing the old event loop.
+        try:
+            gradio_temp = os.environ.get("GRADIO_TEMP_DIR", "")
+            if gradio_temp and os.path.exists(gradio_temp):
+                shutil.rmtree(gradio_temp, ignore_errors=True)
+                os.makedirs(gradio_temp, exist_ok=True)
+        except Exception:
+            pass
         server_name = roop.globals.CFG.server_name
         if server_name is None or len(server_name) < 1:
             server_name = None
@@ -349,7 +439,7 @@ def run():
         if server_port <= 0:
             server_port = None
         ssl_verify = True
-        with gr.Blocks(title=f'{roop.metadata.name} {roop.metadata.version}', theme=roop.globals.CFG.selected_theme, css=mycss, delete_cache=(60, 86400)) as ui:
+        with gr.Blocks(title=f'{roop.metadata.name} {roop.metadata.version}', theme=gr.themes.Base(), css=mycss, delete_cache=(60, 86400)) as ui:
             with gr.Row(variant='compact'):
                     gr.HTML(util.create_version_html(), elem_id="versions")
                     bt_save_session = gr.Button("💾 Save Settings", size='sm', variant='primary', scale=0)

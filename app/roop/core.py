@@ -13,6 +13,11 @@ import platform
 import signal
 import torch
 
+try:
+    import tensorrt  # registers TensorRT DLL paths on Windows so onnxruntime can find them
+except ImportError:
+    pass
+
 import onnxruntime as ort
 available_providers = ort.get_available_providers()
 print("Available ONNX providers at startup:", available_providers)  # Debug
@@ -75,15 +80,22 @@ def decode_execution_providers(execution_providers: List[str]) -> List[str]:
             if list_providers[i] == 'CUDAExecutionProvider':
                 list_providers[i] = ('CUDAExecutionProvider', {'device_id': roop.globals.cuda_device_id})
                 torch.cuda.set_device(roop.globals.cuda_device_id)
-                break
+            elif list_providers[i] == 'TensorrtExecutionProvider':
+                trt_cache = str(pathlib.Path(__file__).parent.parent / 'models' / 'trt_cache')
+                os.makedirs(trt_cache, exist_ok=True)
+                list_providers[i] = ('TensorrtExecutionProvider', {
+                    'device_id': roop.globals.cuda_device_id,
+                    'trt_engine_cache_enable': True,
+                    'trt_engine_cache_path': trt_cache,
+                })
     except:
         pass
 
     return list_providers
     
 # Force GPU if available
-roop.globals.execution_providers = decode_execution_providers(['cuda'])
-print("Forced execution providers:", roop.globals.execution_providers)  # Debug
+# roop.globals.execution_providers = decode_execution_providers(['cuda'])
+# print("Forced execution providers:", roop.globals.execution_providers)  # Debug
 
 def suggest_max_memory() -> int:
     if platform.system().lower() == 'darwin':

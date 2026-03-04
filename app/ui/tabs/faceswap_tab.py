@@ -43,6 +43,9 @@ def faceswap_tab():
 
     with gr.Tab("🎭 Face Swap"):
         with gr.Row(variant='panel'):
+            bt_srcfiles = gr.Files(label='Source Images or Facesets', file_count="multiple", file_types=["image", ".fsz"], elem_id='filelist', height=233)
+            bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video"], elem_id='filelist', height=233)
+        with gr.Row(variant='panel'):
             with gr.Column(scale=2):
                 with gr.Row():
                     input_faces = gr.Gallery(label="Input faces gallery", allow_preview=False, preview=False, height=138, columns=64, object_fit="scale-down", interactive=False)
@@ -137,9 +140,6 @@ def faceswap_tab():
                             )
                     with gr.Column(scale=2):
                         local_folder = gr.Textbox(show_label=False, placeholder="/content/", interactive=True)
-                with gr.Row(variant='panel'):
-                    bt_srcfiles = gr.Files(label='Source Images or Facesets', file_count="multiple", file_types=["image", ".fsz"], elem_id='filelist', height=233)
-                    bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video"], elem_id='filelist', height=233)
                 with gr.Row(variant='panel'):
                     gr.Markdown('')
                     forced_fps = gr.Slider(minimum=0, maximum=120, value=0, label="Video FPS", info='Overrides detected fps if not 0', step=1.0, interactive=True, container=True)
@@ -260,7 +260,7 @@ def faceswap_tab():
     forced_fps.change(fn=on_fps_changed, inputs=[forced_fps], show_progress='hidden')
     bt_destfiles.change(fn=on_destfiles_changed, inputs=[bt_destfiles], outputs=[preview_frame_num, text_frame_clip], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     bt_destfiles.select(fn=on_destfiles_selected, outputs=[preview_frame_num, text_frame_clip, forced_fps], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
-    bt_destfiles.clear(fn=on_clear_destfiles, outputs=[target_faces, selected_face_detection])
+    bt_destfiles.clear(fn=on_clear_destfiles, outputs=[target_faces])
     resultfiles.select(fn=on_resultfiles_selected, inputs=[resultfiles], outputs=[resultimage, resultvideo])
 
     face_selection.select(on_select_face, None, None)
@@ -682,7 +682,7 @@ def on_clear_input_faces():
 def on_clear_destfiles():
     roop.globals.TARGET_FACES.clear()
     ui.globals.ui_target_thumbs.clear()
-    return ui.globals.ui_target_thumbs, gr.Dropdown(value="First found")    
+    return ui.globals.ui_target_thumbs
 
 
 def index_of_no_face_action(dropdown_text):

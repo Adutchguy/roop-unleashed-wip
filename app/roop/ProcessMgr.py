@@ -747,6 +747,14 @@ class ProcessMgr():
             mask = mask[:, :, np.newaxis]
             blended = (color_corrected_mouth * mask + roi * (1 - mask)).astype(np.uint8)
             frame[min_y:max_y, min_x:max_x] = blended
+
+            if self.options.show_face_area_overlay:
+                # Draw a red overlay on the mouth restore region so it's visible
+                # alongside the green face-swap overlay
+                red_overlay = np.zeros_like(frame[min_y:max_y, min_x:max_x])
+                red_overlay[:, :, 2] = 255  # BGR red
+                frame[min_y:max_y, min_x:max_x] = cv2.addWeighted(
+                    frame[min_y:max_y, min_x:max_x], 0.5, red_overlay, 0.5, 0)
         except Exception as e:
             print(f'Error in apply_mouth_area: {e}')
         return frame

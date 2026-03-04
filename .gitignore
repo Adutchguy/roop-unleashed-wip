@@ -1,26 +1,39 @@
+# IDE
 .vs
 .idea
-models
-temp
+.vscode
+
+# Python
 __pycache__
 *.pth
-/start.bat
-/env
-.vscode
-output
-temp
-config.yaml
-run.bat
 venv
-start.sh
+
+# Pinokio launcher env/cache
+/env
+/start.bat
+/run.bat
+/start.sh
 cache
-*.png
-*.jpg
-*.jpeg
-*.mp4
-*.webm
-*.webp
-*.avi
-*.mkv
-*.log
 logs
+
+# App runtime directories (also covered by app/.gitignore)
+app/env
+app/models
+app/temp
+app/output
+app/config.yaml
+app/saved_configs
+
+# User media files — scope to output/temp only, NOT root (icon.png must be tracked)
+app/output/**/*.png
+app/output/**/*.jpg
+app/output/**/*.jpeg
+app/output/**/*.mp4
+app/output/**/*.webm
+app/output/**/*.webp
+app/output/**/*.avi
+app/output/**/*.mkv
+app/temp/**/*.png
+app/temp/**/*.jpg
+app/temp/**/*.jpeg
+app/temp/**/*.mp4

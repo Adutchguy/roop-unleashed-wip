@@ -1,15 +1,31 @@
+# IDE
 .vs
 .idea
-models
-temp
+.vscode
+
+# Python
 __pycache__
 *.pth
-/start.bat
+*.pyc
 /env
-.vscode
-output
-temp
-config.yaml
-run.bat
 venv
+
+# Runtime-generated / user-specific
+config.yaml
+saved_configs
+
+# App runtime directories
+models
+temp
+output
+
+# TensorRT engine cache (large compiled binaries, machine-specific)
+models/trt_cache
+
+# OS scripts not relevant cross-platform
+/start.bat
+run.bat
 start.sh
+
+# Jupyter checkpoints
+.ipynb_checkpoints

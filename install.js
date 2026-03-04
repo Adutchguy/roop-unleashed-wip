@@ -8,7 +8,7 @@ module.exports = {
       method: "shell.run",
       params: {
         message: [
-          "git clone https://github.com/SUP3RMASS1VE/RoopUnleashed app"
+          "git clone --filter=blob:none --sparse https://github.com/Adutchguy/roop-unleashed-wip.git _app_tmp && git -C _app_tmp sparse-checkout set app && mv _app_tmp/app app && rm -rf _app_tmp"
         ]
       }
     },

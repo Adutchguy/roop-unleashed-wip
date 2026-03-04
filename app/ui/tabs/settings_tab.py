@@ -5,7 +5,6 @@ import roop.globals
 import ui.globals
 import json
 
-available_themes = ["Default", "gradio/glass", "gradio/monochrome", "gradio/seafoam", "gradio/soft", "gstaff/xkcd", "freddyaboulton/dracula_revamped", "ysharma/steampunk"]
 image_formats = ['jpg','png', 'webp']
 video_formats = ['avi','mkv', 'mp4', 'webm']
 video_codecs = ['libx264', 'libx265', 'libvpx-vp9', 'h264_nvenc', 'hevc_nvenc']
@@ -21,8 +20,6 @@ def settings_tab():
     providerlist = suggest_execution_providers()
     with gr.Tab("⚙ Settings"):
         with gr.Row():
-            with gr.Column():
-                themes = gr.Dropdown(available_themes, label="Theme", info="Change needs complete restart", value=roop.globals.CFG.selected_theme)
             with gr.Column():
                 settings_controls.append(gr.Checkbox(label="Public Server", value=roop.globals.CFG.server_share, elem_id='server_share', interactive=True))
                 settings_controls.append(gr.Checkbox(label='Clear output folder before each run', value=roop.globals.CFG.clear_output, elem_id='clear_output', interactive=True))
@@ -54,21 +51,6 @@ def settings_tab():
                 with gr.Group():
                     settings_controls.append(gr.Checkbox(label='Use OS temp folder', value=roop.globals.CFG.use_os_temp_folder, elem_id='use_os_temp_folder', interactive=True))
                     settings_controls.append(gr.Checkbox(label='Show video in browser (re-encodes output)', value=roop.globals.CFG.output_show_video, elem_id='output_show_video', interactive=True))
-                with gr.Row():
-                    config_name_input = gr.Textbox(
-                        label="Config Name",
-                        placeholder="my_config",
-                        scale=2,
-                        interactive=True
-                    )
-                    button_save_config = gr.Button("💾 Save Config", variant='primary', scale=1)
-                    saved_configs_dropdown = gr.Dropdown(
-                        label="Saved Configs",
-                        choices=get_saved_configs(),
-                        scale=2,
-                        interactive=True
-                    )
-                    button_load_config = gr.Button("📂 Load Config", variant='secondary', scale=1)    
                 button_apply_restart = gr.Button("Restart Server", variant='primary')
                 button_clean_temp = gr.Button("Clean temp folder")
                 button_apply_settings = gr.Button("Apply Settings")
@@ -82,11 +64,8 @@ def settings_tab():
     memory_limit.input(fn=lambda a,b='memory_limit':on_settings_changed_misc(a,b), inputs=[memory_limit])
     video_quality.input(fn=lambda a,b='video_quality':on_settings_changed_misc(a,b), inputs=[video_quality])
 
-    # button_clean_temp.click(fn=clean_temp, outputs=[bt_srcfiles, input_faces, target_faces, bt_destfiles])
-    button_save_config.click(fn=save_config, inputs=[config_name_input], outputs=[saved_configs_dropdown])
-    button_load_config.click(fn=load_config, inputs=[saved_configs_dropdown])
     button_clean_temp.click(fn=clean_temp)
-    button_apply_settings.click(apply_settings, inputs=[themes, input_server_name, input_server_port, output_template])
+    button_apply_settings.click(apply_settings, inputs=[input_server_name, input_server_port, output_template])
     button_apply_restart.click(restart)
 
 
@@ -166,10 +145,9 @@ def clean_temp():
     return None,None,None,None
 
 
-def apply_settings(themes, input_server_name, input_server_port, output_template):
+def apply_settings(input_server_name, input_server_port, output_template):
     from ui.main import show_msg
 
-    roop.globals.CFG.selected_theme = themes
     roop.globals.CFG.server_name = input_server_name
     roop.globals.CFG.server_port = input_server_port
     roop.globals.CFG.output_template = output_template

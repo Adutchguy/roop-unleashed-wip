@@ -50,13 +50,291 @@ def run():
     run_server = True
     uii.ui_restart_server = False
     mycss = """
-        span {color: var(--block-info-text-color)}
-        #fixedheight {
-            max-height: 238.4px;
-            overflow-y: auto !important;
-        }
-        .image-container.svelte-1l6wqyv {height: 100%}
+    /* ── Dark Forest Theme ───────────────────────────────────────────────────
+       #000000  black       – page / body background
+       #1a472a  dark-green  – block / panel backgrounds, tab bar, header
+       #2a623d  mid-green   – secondary panels, inputs, hover surfaces
+       #5d5d5d  gray        – borders, dividers, tracks
+       #aaaaaa  light-gray  – muted / secondary text
+       Text:    #ffffff on all dark surfaces
+    ──────────────────────────────────────────────────────────────────────── */
 
+    :root, .dark {
+        color-scheme: dark !important;
+
+        /* accent / links */
+        --color-accent:                            #aaaaaa;
+        --color-accent-soft:                       rgba(170,170,170,0.20);
+        --border-color-accent:                     #aaaaaa;
+        --border-color-primary:                    #5d5d5d;
+        --link-text-color:                         #aaaaaa;
+        --link-text-color-hover:                   #ffffff;
+        --link-text-color-active:                  #ffffff;
+        --link-text-color-visited:                 #aaaaaa;
+
+        /* page backgrounds */
+        --body-background-fill:                    #000000;
+        --background-fill-primary:                 #1a472a;
+        --background-fill-secondary:               #2a623d;
+
+        /* blocks */
+        --block-background-fill:                   #1a472a;
+        --block-border-color:                      #5d5d5d;
+        --block-border-width:                      1px;
+        --block-label-background-fill:             #000000;
+        --block-label-text-color:                  #aaaaaa;
+        --block-title-text-color:                  #ffffff;
+        --block-info-text-color:                   #aaaaaa;
+        --block-radius:                            8px;
+
+        /* panels */
+        --panel-background-fill:                   #1a472a;
+        --panel-border-color:                      #5d5d5d;
+
+        /* inputs */
+        --input-background-fill:                   #2a623d;
+        --input-background-fill-focus:             #2a623d;
+        --input-border-color:                      #5d5d5d;
+        --input-border-color-focus:                #aaaaaa;
+        --input-border-color-hover:                #aaaaaa;
+        --input-shadow:                            none;
+        --input-shadow-focus:                      0 0 0 3px rgba(170,170,170,0.25);
+        --input-placeholder-color:                 #5d5d5d;
+        --input-text-color:                        #ffffff;
+
+        /* primary buttons */
+        --button-primary-background-fill:          #2a623d;
+        --button-primary-background-fill-hover:    #1a472a;
+        --button-primary-text-color:               #ffffff;
+        --button-primary-border-color:             #5d5d5d;
+        --button-primary-border-color-hover:       #aaaaaa;
+        --button-primary-shadow:                   none;
+        --button-primary-shadow-hover:             0 2px 8px rgba(170,170,170,0.20);
+
+        /* secondary buttons */
+        --button-secondary-background-fill:        #1a472a;
+        --button-secondary-background-fill-hover:  #2a623d;
+        --button-secondary-text-color:             #aaaaaa;
+        --button-secondary-border-color:           #5d5d5d;
+        --button-secondary-border-color-hover:     #aaaaaa;
+
+        /* stop/cancel buttons */
+        --button-cancel-background-fill:           #5a1a1a;
+        --button-cancel-background-fill-hover:     #7a2a2a;
+        --button-cancel-text-color:                #ffffff;
+        --button-cancel-border-color:              #5a1a1a;
+
+        /* checkboxes – high-visibility on dark background */
+        --checkbox-background-color:               #2a623d;
+        --checkbox-background-color-focus:         #2a623d;
+        --checkbox-background-color-selected:      #aaaaaa;
+        --checkbox-background-color-hover:         #2a623d;
+        --checkbox-border-color:                   #aaaaaa;
+        --checkbox-border-color-focus:             #ffffff;
+        --checkbox-border-color-selected:          #ffffff;
+        --checkbox-border-color-hover:             #ffffff;
+        --checkbox-label-background-fill:          transparent;
+        --checkbox-label-background-fill-hover:    rgba(170,170,170,0.10);
+        --checkbox-label-background-fill-selected: rgba(170,170,170,0.15);
+        --checkbox-label-text-color:               #ffffff;
+
+        /* slider */
+        --slider-color:                            #aaaaaa;
+
+        /* table */
+        --table-odd-background-fill:               #1a472a;
+        --table-even-background-fill:              #2a623d;
+        --table-row-focus:                         rgba(170,170,170,0.10);
+
+        /* shadows */
+        --shadow-drop:                             0 1px 4px rgba(0,0,0,0.60);
+        --shadow-drop-lg:                          0 4px 16px rgba(0,0,0,0.70);
+        --shadow-inset:                            inset 0 1px 3px rgba(0,0,0,0.50);
+
+        /* neutral scale */
+        --neutral-50:  #ffffff;
+        --neutral-100: #aaaaaa;
+        --neutral-200: #5d5d5d;
+        --neutral-300: #5d5d5d;
+        --neutral-400: #5d5d5d;
+        --neutral-500: #2a623d;
+        --neutral-600: #1a472a;
+        --neutral-700: #1a472a;
+        --neutral-800: #000000;
+        --neutral-900: #000000;
+        --neutral-950: #000000;
+    }
+
+    /* ── Direct element overrides ── */
+
+    html, body { background-color: #000000 !important; color: #ffffff !important; }
+    .gradio-container, .gradio-container.dark {
+        background: #000000 !important;
+        color: #ffffff !important;
+    }
+
+    /* Blocks / panels */
+    .block, .panel, fieldset, .form, .gap, .contain, .tabs {
+        background: #1a472a !important;
+        border: 1px solid #5d5d5d !important;
+        color: #ffffff !important;
+    }
+
+    /* Block labels */
+    .block-label, .block > .label-wrap, .block > label > span,
+    label span, .block .label-wrap span {
+        color: #aaaaaa !important;
+    }
+
+    /* General text */
+    .block p, .block span, .block div { color: #ffffff !important; }
+
+    /* Inputs */
+    input:not([type=range]), textarea, select {
+        background: #2a623d !important;
+        border: 1px solid #5d5d5d !important;
+        color: #ffffff !important;
+    }
+    input:not([type=range]):focus, textarea:focus {
+        border-color: #aaaaaa !important;
+        box-shadow: 0 0 0 3px rgba(170,170,170,0.25) !important;
+        background: #2a623d !important;
+    }
+    ::placeholder { color: #5d5d5d !important; opacity: 1; }
+
+    /* Dropdowns / option lists */
+    .wrap, ul.options, .dropdown-arrow {
+        background: #2a623d !important;
+        border: 1px solid #5d5d5d !important;
+        color: #ffffff !important;
+    }
+    ul.options li { color: #ffffff !important; background: #2a623d !important; }
+    ul.options li:hover, ul.options li.selected {
+        background: #1a472a !important;
+        color: #ffffff !important;
+    }
+
+    /* File upload / drop zones */
+    .upload-container, .file-preview, .drop-container {
+        background: #1a472a !important;
+        border: 2px dashed #5d5d5d !important;
+        color: #aaaaaa !important;
+    }
+    .drop-container:hover { border-color: #aaaaaa !important; }
+
+    /* Gallery */
+    .gallery, .gallery-container, .grid-container { background: #1a472a !important; }
+    .gallery-item, .thumbnail-item { border: 1px solid #5d5d5d !important; }
+    .gallery-item:hover, .thumbnail-item:hover {
+        border-color: #aaaaaa !important;
+        box-shadow: 0 0 0 2px rgba(170,170,170,0.30) !important;
+    }
+
+    /* Buttons – primary */
+    button.primary, .btn-primary {
+        background: #2a623d !important;
+        border-color: #5d5d5d !important;
+        color: #ffffff !important;
+    }
+    button.primary:hover, .btn-primary:hover {
+        background: #1a472a !important;
+        border-color: #aaaaaa !important;
+    }
+
+    /* Buttons – secondary */
+    button.secondary, .btn-secondary {
+        background: #1a472a !important;
+        border-color: #5d5d5d !important;
+        color: #aaaaaa !important;
+    }
+    button.secondary:hover, .btn-secondary:hover {
+        background: #2a623d !important;
+        border-color: #aaaaaa !important;
+        color: #ffffff !important;
+    }
+
+    /* Buttons – stop / cancel */
+    button.stop, button.cancel, .btn-cancel {
+        background: #5a1a1a !important;
+        border-color: #5a1a1a !important;
+        color: #ffffff !important;
+    }
+
+    /* Sliders */
+    input[type=range] { accent-color: #aaaaaa; }
+    input[type=range]::-webkit-slider-thumb { background: #aaaaaa !important; }
+    input[type=range]::-moz-range-thumb     { background: #aaaaaa !important; }
+    input[type=range]::-webkit-slider-runnable-track { background: #1a472a !important; }
+
+    /* Checkboxes – explicitly styled for visibility */
+    input[type=checkbox] {
+        accent-color: #aaaaaa;
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+    }
+    input[type=radio] { accent-color: #aaaaaa; }
+
+    /* Header row */
+    .compact {
+        background: #000000 !important;
+        border-bottom: 1px solid #5d5d5d !important;
+    }
+
+    /* Tab bar */
+    .tab-nav { background: #000000 !important; border-bottom-color: #5d5d5d !important; }
+    .tab-nav button {
+        color: #aaaaaa !important;
+        font-weight: 500;
+        background: transparent !important;
+    }
+    .tab-nav button:hover {
+        color: #ffffff !important;
+        background: rgba(170,170,170,0.10) !important;
+    }
+    .tab-nav button.selected {
+        color: #ffffff !important;
+        border-bottom: 2px solid #aaaaaa !important;
+        font-weight: 700 !important;
+        background: rgba(170,170,170,0.15) !important;
+    }
+
+    /* Accordion headers */
+    .label-wrap {
+        background: #000000 !important;
+        border: 1px solid #5d5d5d !important;
+        border-radius: 6px !important;
+    }
+    .label-wrap:hover { background: #1a472a !important; }
+    .label-wrap span  { color: #ffffff !important; }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 7px; height: 7px; }
+    ::-webkit-scrollbar-track { background: #1a472a; }
+    ::-webkit-scrollbar-thumb { background: #5d5d5d; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #aaaaaa; }
+
+    /* Progress / generating */
+    .progress-bar { background-color: #aaaaaa !important; }
+    .generating    { border-color: #aaaaaa !important; }
+
+    /* Toast notifications */
+    .toast-wrap  { background: #1a472a !important; border-color: #5d5d5d !important; }
+    .toast-title { color: #ffffff !important; }
+    .toast-text  { color: #aaaaaa !important; }
+
+    /* Markdown / prose */
+    .prose, .prose p, .prose li { color: #ffffff !important; }
+    .prose a { color: #aaaaaa !important; }
+    .prose a:hover { color: #ffffff !important; }
+
+    /* ── preserved rules ── */
+    span {color: var(--block-info-text-color)}
+    #fixedheight {
+        max-height: 238.4px;
+        overflow-y: auto !important;
+    }
+    .image-container.svelte-1l6wqyv {height: 100%}
     """
 
     while run_server:
@@ -69,7 +347,6 @@ def run():
         ssl_verify = True
         with gr.Blocks(title=f'{roop.metadata.name} {roop.metadata.version}', theme=roop.globals.CFG.selected_theme, css=mycss, delete_cache=(60, 86400)) as ui:
             with gr.Row(variant='compact'):
-                    gr.Markdown(f"### [{roop.metadata.name} {roop.metadata.version}](https://github.com/C0untFloyd/roop-unleashed)")
                     gr.HTML(util.create_version_html(), elem_id="versions")
                     bt_save_session = gr.Button("💾 Save Settings", size='sm', variant='primary', scale=0)
                     bt_load_session = gr.Button("📂 Load Settings", size='sm', scale=0)

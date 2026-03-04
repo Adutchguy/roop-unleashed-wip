@@ -49,7 +49,6 @@ def run():
     run_server = True
     uii.ui_restart_server = False
     mycss = """
-    /* ── Dark Forest Theme ───────────────────────────────────────────────────
     /* ════════════════════════════════════════════════════════════════════════
        CARBON DARK  –  roop-unleashed UI theme
        Surface scale (deep → elevated):

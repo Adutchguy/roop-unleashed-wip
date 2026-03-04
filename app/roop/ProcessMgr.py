@@ -586,9 +586,14 @@ class ProcessMgr():
         bottom = int(h - (mask_offsets[1] * h))
         left = int(mask_offsets[2] * w)
         right = int(w - (mask_offsets[3] * w))
-        img_matte[top:bottom, left:right] = 255
+        # Ellipse avoids rectangular corners that create visible box seams
+        cx = (left + right) // 2
+        cy = (top + bottom) // 2
+        ax = max(1, (right - left) // 2)
+        ay = max(1, (bottom - top) // 2)
+        cv2.ellipse(img_matte, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
 
-        img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_NEAREST, borderValue=0.0)
+        img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
         img_matte = self.blur_area(img_matte, mask_offsets[4])
@@ -616,18 +621,18 @@ class ProcessMgr():
 
 
     def blur_area(self, img_matte, face_mask_blend):
+        # Always apply minimal anti-aliasing after the affine warp
+        img_matte = cv2.GaussianBlur(img_matte, (3, 3), 0)
         if face_mask_blend <= 0:
             return img_matte
-        mask_h_inds, mask_w_inds = np.where(img_matte == 255)
+        mask_h_inds, mask_w_inds = np.where(img_matte > 127)
         if len(mask_h_inds) == 0 or len(mask_w_inds) == 0:
             return img_matte
         mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
         mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
         mask_size = int(np.sqrt(mask_h * mask_w))
-        # blend_px scales with both mask size and user blend amount (0-100)
+        # blend_px controls ONLY edge softness — no erosion, mask coverage unchanged
         blend_px = max(1, int(mask_size * face_mask_blend / 200))
-        kernel = np.ones((blend_px, blend_px), np.uint8)
-        img_matte = cv2.erode(img_matte, kernel, iterations=1)
         blur_size = blend_px * 2 + 1
         return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
 

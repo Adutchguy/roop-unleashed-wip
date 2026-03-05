@@ -606,24 +606,26 @@ class ProcessMgr():
                                    flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
-        img_matte = self.blur_area(img_matte, blend_amount)
+        img_matte, blend_px_t = self.blur_area(img_matte, blend_amount)
         img_matte = img_matte.astype(np.float32) / 255
 
-        # Validity mask: hard binary 0/1 map of valid warp coverage.
-        # INTER_NEAREST gives a hard pixel boundary; 4px erosion pulls it well
-        # past the 1-2px INTER_LINEAR antialiasing fringe of the face warp,
-        # preventing any dark-edge bleed from appearing at the boundary.
+        # Distance-transform boundary fade: smoothly drives img_matte to 0 as
+        # pixels approach the warp boundary, over the same blend_px_t width used
+        # for the ellipse edge fade. This prevents dark face-model fill pixels
+        # (present in the non-face corners of the 512×512 crop) from ever being
+        # blended into the background — no clip step, no hard line.
         face_valid_raw = cv2.warpAffine(
             np.full((upsk_face.shape[0], upsk_face.shape[1]), 255, dtype=np.uint8),
             IM, (target_img.shape[1], target_img.shape[0]),
             flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0
         )
-        face_valid_raw = cv2.erode(face_valid_raw, np.ones((3, 3), np.uint8), iterations=4)
-        face_valid = (face_valid_raw > 127).astype(np.float32)[:, :, np.newaxis]
+        dist = cv2.distanceTransform(face_valid_raw, cv2.DIST_L2, 5)
+        face_fade = np.clip(dist / max(blend_px_t, 1), 0.0, 1.0)[:, :, np.newaxis]
 
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
+        img_matte = img_matte * face_fade
 
-        # Capture mask_2d from the smooth gradient for overlay rendering
+        # Capture mask_2d after boundary fade for accurate overlay rendering
         mask_2d = img_matte[:, :, 0] if self.options.show_face_area_overlay else None
 
         frame_size = (target_img.shape[1], target_img.shape[0])
@@ -633,12 +635,8 @@ class ProcessMgr():
             paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio,
                                          fake_face, 1.0 - self.options.blend_ratio, 0)
 
-        # Outside the valid warp region, replace face pixels with target_img.
-        # This means wherever face_valid=0: img_matte * target + (1-img_matte) * target
-        # = target — no artifact regardless of img_matte value at the boundary.
         target_f = target_img.astype(np.float32)
-        paste_face_f = face_valid * paste_face.astype(np.float32) + (1.0 - face_valid) * target_f
-        paste_face = img_matte * paste_face_f + (1.0 - img_matte) * target_f
+        paste_face = img_matte * paste_face.astype(np.float32) + (1.0 - img_matte) * target_f
 
         if self.options.show_face_area_overlay:
             # Alpha-composite the overlay using mask_2d as per-pixel opacity.
@@ -658,17 +656,16 @@ class ProcessMgr():
         # Always apply minimal anti-aliasing after the affine warp
         img_matte = cv2.GaussianBlur(img_matte, (3, 3), 0)
         if face_mask_blend <= 0:
-            return img_matte
+            return img_matte, 1
         mask_h_inds, mask_w_inds = np.where(img_matte > 127)
         if len(mask_h_inds) == 0 or len(mask_w_inds) == 0:
-            return img_matte
+            return img_matte, 1
         mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
         mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
         mask_size = int(np.sqrt(mask_h * mask_w))
-        # blend_px controls ONLY edge softness — no erosion, mask coverage unchanged
         blend_px = max(1, int(mask_size * face_mask_blend / 200))
         blur_size = blend_px * 2 + 1
-        return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
+        return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0), blend_px
 
 
     def prepare_crop_frame(self, swap_frame):

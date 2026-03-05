@@ -622,12 +622,8 @@ class ProcessMgr():
         face_valid = (face_valid_raw > 127).astype(np.float32)[:, :, np.newaxis]
 
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
-        # Explicitly zero mask outside valid warp coverage — guarantees no bleed
-        # regardless of blur tail, even at low blend_amount values
-        img_matte = img_matte * face_valid
 
-        # Capture mask_2d AFTER face_valid clip so overlay only renders where
-        # the mask is genuinely active — prevents ghost color at warp boundary
+        # Capture mask_2d from the smooth gradient for overlay rendering
         mask_2d = img_matte[:, :, 0] if self.options.show_face_area_overlay else None
 
         frame_size = (target_img.shape[1], target_img.shape[0])
@@ -637,8 +633,12 @@ class ProcessMgr():
             paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio,
                                          fake_face, 1.0 - self.options.blend_ratio, 0)
 
+        # Outside the valid warp region, replace face pixels with target_img.
+        # This means wherever face_valid=0: img_matte * target + (1-img_matte) * target
+        # = target — no artifact regardless of img_matte value at the boundary.
         target_f = target_img.astype(np.float32)
-        paste_face = img_matte * paste_face.astype(np.float32) + (1.0 - img_matte) * target_f
+        paste_face_f = face_valid * paste_face.astype(np.float32) + (1.0 - face_valid) * target_f
+        paste_face = img_matte * paste_face_f + (1.0 - img_matte) * target_f
 
         if self.options.show_face_area_overlay:
             # Alpha-composite the overlay using mask_2d as per-pixel opacity.

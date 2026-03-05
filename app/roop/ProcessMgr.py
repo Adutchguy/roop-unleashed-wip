@@ -609,9 +609,6 @@ class ProcessMgr():
         img_matte = self.blur_area(img_matte, blend_amount)
         img_matte = img_matte.astype(np.float32) / 255
 
-        # Save 2D mask before reshape for overlay rendering
-        mask_2d = img_matte if self.options.show_face_area_overlay else None
-
         # Validity mask: hard binary 0/1 map of valid warp coverage.
         # INTER_NEAREST gives a hard pixel boundary; 4px erosion pulls it well
         # past the 1-2px INTER_LINEAR antialiasing fringe of the face warp,
@@ -629,6 +626,10 @@ class ProcessMgr():
         # regardless of blur tail, even at low blend_amount values
         img_matte = img_matte * face_valid
 
+        # Capture mask_2d AFTER face_valid clip so overlay only renders where
+        # the mask is genuinely active — prevents ghost color at warp boundary
+        mask_2d = img_matte[:, :, 0] if self.options.show_face_area_overlay else None
+
         frame_size = (target_img.shape[1], target_img.shape[0])
         paste_face = cv2.warpAffine(upsk_face, IM, frame_size, borderMode=cv2.BORDER_REPLICATE)
         if upsk_face is not fake_face:
@@ -640,10 +641,15 @@ class ProcessMgr():
         paste_face = img_matte * paste_face.astype(np.float32) + (1.0 - img_matte) * target_f
 
         if self.options.show_face_area_overlay:
-            overlay = np.zeros_like(target_img, dtype=np.uint8)
-            overlay[:, :, 1] = (mask_2d * 200).astype(np.uint8)
-            overlay[:, :, 2] = np.clip((1.0 - mask_2d) * mask_2d * 4 * 255, 0, 255).astype(np.uint8)
-            paste_face = cv2.addWeighted(paste_face.astype(np.uint8), 0.6, overlay, 0.4, 0)
+            # Alpha-composite the overlay using mask_2d as per-pixel opacity.
+            # addWeighted(0.6/0.4) would apply 0.6x to the whole frame, turning
+            # white backgrounds grey wherever overlay=black (outside the mask).
+            paste_face_f = paste_face.astype(np.float32)
+            alpha = (mask_2d * 0.4)[:, :, np.newaxis]
+            overlay_g = (mask_2d * 200)[:, :, np.newaxis]
+            overlay_r = np.clip((1.0 - mask_2d) * mask_2d * 4 * 255, 0, 255)[:, :, np.newaxis]
+            overlay_color = np.concatenate([np.zeros_like(overlay_g), overlay_g, overlay_r], axis=2)
+            paste_face = np.clip(paste_face_f * (1.0 - alpha) + overlay_color * alpha, 0, 255).astype(np.uint8)
 
         return paste_face.astype(np.uint8)
 

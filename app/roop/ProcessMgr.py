@@ -576,38 +576,43 @@ class ProcessMgr():
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
-        face_matte = np.full((target_img.shape[0], target_img.shape[1]), 255, dtype=np.uint8)
         img_matte = np.zeros((upsk_face.shape[0], upsk_face.shape[1]), dtype=np.uint8)
 
         w = img_matte.shape[1]
         h = img_matte.shape[0]
 
-        top = int(mask_offsets[0] * h)
-        bottom = int(h - (mask_offsets[1] * h))
-        left = int(mask_offsets[2] * w)
-        right = int(w - (mask_offsets[3] * w))
-        # Ellipse avoids rectangular corners that create visible box seams
+        # Compute auto-inset so Gaussian blur fades to ~0 before the face warp
+        # boundary, eliminating dark-border artifacts on bright/white backgrounds.
+        blend_amount = mask_offsets[4]
+        raw_top    = int(mask_offsets[0] * h)
+        raw_bottom = int(h - mask_offsets[1] * h)
+        raw_left   = int(mask_offsets[2] * w)
+        raw_right  = int(w - mask_offsets[3] * w)
+        est_mask_size = int(np.sqrt(max(1, (raw_bottom - raw_top) * (raw_right - raw_left))))
+        blend_px = max(1, int(est_mask_size * blend_amount / 200)) if blend_amount > 0 else 1
+
+        top    = min(raw_top    + blend_px, h // 2)
+        bottom = max(raw_bottom - blend_px, h // 2 + 1)
+        left   = min(raw_left   + blend_px, w // 2)
+        right  = max(raw_right  - blend_px, w // 2 + 1)
+
         cx = (left + right) // 2
         cy = (top + bottom) // 2
         ax = max(1, (right - left) // 2)
         ay = max(1, (bottom - top) // 2)
         cv2.ellipse(img_matte, (cx, cy), (ax, ay), 0, 0, 360, 255, -1)
 
-        img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
+        img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]),
+                                   flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
-        img_matte = self.blur_area(img_matte, mask_offsets[4])
+        img_matte = self.blur_area(img_matte, blend_amount)
         img_matte = img_matte.astype(np.float32) / 255
-        face_matte = face_matte.astype(np.float32) / 255
-        img_matte = np.minimum(face_matte, img_matte)
 
-        # Save 2D mask before reshape so overlay can use gradient values
+        # Save 2D mask before reshape for overlay rendering
         mask_2d = img_matte if self.options.show_face_area_overlay else None
 
-        # Validity mask: 1.0 where the affine warp covers the source face image,
-        # 0.0 outside. Confining blend to this region prevents the Gaussian blur
-        # tail from blending into BORDER_REPLICATE-filled black/dark areas that
-        # appear when the face is near the frame boundary.
+        # Validity mask: 1.0 inside the affine warp coverage, 0.0 outside
         face_valid = cv2.warpAffine(
             np.full((upsk_face.shape[0], upsk_face.shape[1]), 255, dtype=np.uint8),
             IM, (target_img.shape[1], target_img.shape[0]),
@@ -615,21 +620,24 @@ class ProcessMgr():
         ).astype(np.float32)[:, :, np.newaxis] / 255
 
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
-        # Confine blend mask to valid warp region — eliminates ghost border artifacts
-        img_matte = img_matte * face_valid
 
-        paste_face = cv2.warpAffine(upsk_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+        frame_size = (target_img.shape[1], target_img.shape[0])
+        # BORDER_CONSTANT=0 prevents dark edge pixels from entering the blend zone
+        paste_face = cv2.warpAffine(upsk_face, IM, frame_size,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         if upsk_face is not fake_face:
-            fake_face = cv2.warpAffine(fake_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
-            paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio, fake_face, 1.0 - self.options.blend_ratio, 0)
+            fake_face = cv2.warpAffine(fake_face, IM, frame_size,
+                                       borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio,
+                                         fake_face, 1.0 - self.options.blend_ratio, 0)
 
-        paste_face = img_matte * paste_face.astype(np.float32)
-        paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
+        # Fill regions outside the valid warp coverage with target pixels so any
+        # residual mask value there composites seamlessly back to the background
+        target_f = target_img.astype(np.float32)
+        paste_face_f = face_valid * paste_face.astype(np.float32) + (1.0 - face_valid) * target_f
+        paste_face = img_matte * paste_face_f + (1.0 - img_matte) * target_f
 
         if self.options.show_face_area_overlay:
-            # Gradient overlay: green in the core (mask≈1), yellow/orange at the
-            # edge blend zone (mask≈0.5), invisible outside (mask≈0).
-            # G channel scales with mask strength; R channel peaks mid-transition.
             overlay = np.zeros_like(target_img, dtype=np.uint8)
             overlay[:, :, 1] = (mask_2d * 200).astype(np.uint8)
             overlay[:, :, 2] = np.clip((1.0 - mask_2d) * mask_2d * 4 * 255, 0, 255).astype(np.uint8)

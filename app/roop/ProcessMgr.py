@@ -604,13 +604,26 @@ class ProcessMgr():
         # Save 2D mask before reshape so overlay can use gradient values
         mask_2d = img_matte if self.options.show_face_area_overlay else None
 
+        # Validity mask: 1.0 where the affine warp covers the source face image,
+        # 0.0 outside. Confining blend to this region prevents the Gaussian blur
+        # tail from blending into BORDER_REPLICATE-filled black/dark areas that
+        # appear when the face is near the frame boundary.
+        face_valid = cv2.warpAffine(
+            np.full((upsk_face.shape[0], upsk_face.shape[1]), 255, dtype=np.uint8),
+            IM, (target_img.shape[1], target_img.shape[0]),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0
+        ).astype(np.float32)[:, :, np.newaxis] / 255
+
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
+        # Confine blend mask to valid warp region — eliminates ghost border artifacts
+        img_matte = img_matte * face_valid
+
         paste_face = cv2.warpAffine(upsk_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
         if upsk_face is not fake_face:
             fake_face = cv2.warpAffine(fake_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
             paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio, fake_face, 1.0 - self.options.blend_ratio, 0)
 
-        paste_face = img_matte * paste_face
+        paste_face = img_matte * paste_face.astype(np.float32)
         paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
 
         if self.options.show_face_area_overlay:

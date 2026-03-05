@@ -612,30 +612,32 @@ class ProcessMgr():
         # Save 2D mask before reshape for overlay rendering
         mask_2d = img_matte if self.options.show_face_area_overlay else None
 
-        # Validity mask: 1.0 inside the affine warp coverage, 0.0 outside
-        face_valid = cv2.warpAffine(
+        # Validity mask: hard binary 0/1 map of valid warp coverage.
+        # INTER_NEAREST gives a hard pixel boundary; 4px erosion pulls it well
+        # past the 1-2px INTER_LINEAR antialiasing fringe of the face warp,
+        # preventing any dark-edge bleed from appearing at the boundary.
+        face_valid_raw = cv2.warpAffine(
             np.full((upsk_face.shape[0], upsk_face.shape[1]), 255, dtype=np.uint8),
             IM, (target_img.shape[1], target_img.shape[0]),
-            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0
-        ).astype(np.float32)[:, :, np.newaxis] / 255
+            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0
+        )
+        face_valid_raw = cv2.erode(face_valid_raw, np.ones((3, 3), np.uint8), iterations=4)
+        face_valid = (face_valid_raw > 127).astype(np.float32)[:, :, np.newaxis]
 
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
+        # Explicitly zero mask outside valid warp coverage — guarantees no bleed
+        # regardless of blur tail, even at low blend_amount values
+        img_matte = img_matte * face_valid
 
         frame_size = (target_img.shape[1], target_img.shape[0])
-        # BORDER_CONSTANT=0 prevents dark edge pixels from entering the blend zone
-        paste_face = cv2.warpAffine(upsk_face, IM, frame_size,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        paste_face = cv2.warpAffine(upsk_face, IM, frame_size, borderMode=cv2.BORDER_REPLICATE)
         if upsk_face is not fake_face:
-            fake_face = cv2.warpAffine(fake_face, IM, frame_size,
-                                       borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            fake_face = cv2.warpAffine(fake_face, IM, frame_size, borderMode=cv2.BORDER_REPLICATE)
             paste_face = cv2.addWeighted(paste_face, self.options.blend_ratio,
                                          fake_face, 1.0 - self.options.blend_ratio, 0)
 
-        # Fill regions outside the valid warp coverage with target pixels so any
-        # residual mask value there composites seamlessly back to the background
         target_f = target_img.astype(np.float32)
-        paste_face_f = face_valid * paste_face.astype(np.float32) + (1.0 - face_valid) * target_f
-        paste_face = img_matte * paste_face_f + (1.0 - img_matte) * target_f
+        paste_face = img_matte * paste_face.astype(np.float32) + (1.0 - img_matte) * target_f
 
         if self.options.show_face_area_overlay:
             overlay = np.zeros_like(target_img, dtype=np.uint8)

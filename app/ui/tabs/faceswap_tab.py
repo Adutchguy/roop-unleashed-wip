@@ -1,6 +1,5 @@
 import os
 import shutil
-import pathlib
 import gradio as gr
 import roop.utilities as util
 import roop.globals
@@ -190,12 +189,6 @@ def faceswap_tab():
                 gr.Button("👀 Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.globals.output_path))
             with gr.Column(scale=2):
                 output_method = gr.Dropdown(["File","Virtual Camera", "Both"], value=roop.globals.CFG.output_method, label="Select Output Method", interactive=True)
-        with gr.Row(variant='panel'):
-            with gr.Column():
-                resultfiles = gr.Files(label='Processed File(s)', interactive=False)
-            with gr.Column():
-                resultimage = gr.Image(type='filepath', label='Final Image', interactive=False )
-                resultvideo = gr.Video(label='Final Video', interactive=False, visible=False)
 
     # Store saveable component refs in ui.globals for cross-tab access (Save/Load session)
     ui.globals.ui_selected_face_detection = selected_face_detection
@@ -250,20 +243,17 @@ def faceswap_tab():
     bt_destfiles.change(fn=on_destfiles_changed, inputs=[bt_destfiles], outputs=[preview_frame_num, text_frame_clip], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     bt_destfiles.select(fn=on_destfiles_selected, outputs=[preview_frame_num, text_frame_clip, forced_fps], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     bt_destfiles.clear(fn=on_clear_destfiles, outputs=[target_faces])
-    resultfiles.select(fn=on_resultfiles_selected, inputs=[resultfiles], outputs=[resultimage, resultvideo])
-
     bt_clear_input_faces.click(fn=on_clear_input_faces, outputs=[input_faces])
 
     bt_add_local.click(fn=on_add_local_folder, inputs=[local_folder], outputs=[bt_destfiles])
     bt_preview_mask.click(fn=on_preview_mask, inputs=[preview_frame_num, bt_destfiles, clip_text, selected_mask_engine], outputs=[previewimage]) 
 
-    start_event = bt_start.click(fn=start_swap, 
+    start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text,video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, maskimage],
-        outputs=[bt_start, bt_stop, resultfiles], show_progress='full')
-    after_swap_event = start_event.success(fn=on_resultfiles_finished, inputs=[resultfiles], outputs=[resultimage, resultvideo])
+        outputs=[bt_start, bt_stop], show_progress='full')
 
-    bt_stop.click(fn=stop_swap, cancels=[start_event, after_swap_event], outputs=[bt_start, bt_stop], queue=False)
+    bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop], queue=False)
 
     bt_refresh_preview.click(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)            
     bt_toggle_masking.click(fn=on_toggle_masking, inputs=[previewimage, maskimage], outputs=[previewimage, maskimage])            
@@ -659,7 +649,7 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     global is_processing, list_files_process
 
     if list_files_process is None or len(list_files_process) <= 0:
-        return gr.Button(variant="primary"), None, None
+        return gr.Button(variant="primary"), None
     
     if roop.globals.CFG.clear_output:
         shutil.rmtree(roop.globals.output_path)
@@ -687,10 +677,10 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     if roop.globals.face_swap_mode == 'selected':
         if len(roop.globals.TARGET_FACES) < 1:
             gr.Error('No Target Face selected!')
-            return gr.Button(variant="primary"), None, None
+            return gr.Button(variant="primary"), None
 
-    is_processing = True            
-    yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True), None
+    is_processing = True
+    yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True)
     roop.globals.execution_threads = roop.globals.CFG.max_threads
     roop.globals.video_encoder = roop.globals.CFG.output_video_codec
     roop.globals.video_quality = roop.globals.CFG.video_quality
@@ -698,18 +688,13 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", imagemask, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX)
     is_processing = False
-    outdir = pathlib.Path(roop.globals.output_path)
-    outfiles = [str(item) for item in outdir.rglob("*") if item.is_file()]
-    if len(outfiles) > 0:
-        yield gr.Button(variant="primary", interactive=True),gr.Button(variant="secondary", interactive=False),gr.Files(value=outfiles)
-    else:
-        yield gr.Button(variant="primary", interactive=True),gr.Button(variant="secondary", interactive=False),None
+    yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
 
 
 def stop_swap():
     roop.globals.processing = False
     gr.Info('Aborting processing - please wait for the remaining threads to be stopped')
-    return gr.Button(variant="primary", interactive=True),gr.Button(variant="secondary", interactive=False),None
+    return gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
 
 
 def on_fps_changed(fps):
@@ -771,32 +756,7 @@ def on_destfiles_selected(evt: gr.SelectData):
     return gr.Slider(value=1, maximum=total_frames, info='0:00:00'), gen_processing_text(0,0), fps
 
 
-def on_resultfiles_selected(evt: gr.SelectData, files):
-    selected_index = evt.index
-    filename = files[selected_index].name
-    return display_output(filename)
-
-def on_resultfiles_finished(files):
-    selected_index = 0
-    if files is None or len(files) < 1:
-        return None, None
-    
-    filename = files[selected_index].name
-    return display_output(filename)
-
-
 def get_gradio_output_format():
     if roop.globals.CFG.output_image_format == "jpg":
         return "jpeg"
     return roop.globals.CFG.output_image_format
-
-
-def display_output(filename):
-    if util.is_video(filename) and roop.globals.CFG.output_show_video:
-        return gr.Image(visible=False), gr.Video(visible=True, value=filename)
-    else:
-        if util.is_video(filename) or filename.lower().endswith('gif'):
-            current_frame = get_video_frame(filename)
-        else:
-            current_frame = get_image_frame(filename)
-        return gr.Image(visible=True, value=util.convert_to_gradio(current_frame)), gr.Video(visible=False)

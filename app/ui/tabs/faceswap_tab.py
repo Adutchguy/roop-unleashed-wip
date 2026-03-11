@@ -54,10 +54,9 @@ def faceswap_tab():
                     bt_remove_selected_input_face = gr.Button("❌ Remove selected", size='sm')
                     bt_clear_input_faces = gr.Button("💥 Clear all", variant='stop', size='sm')
                     bt_remove_selected_target_face = gr.Button("❌ Remove selected", size='sm')
-                    bt_add_local = gr.Button('Add local files from', size='sm')
 
                 with gr.Row():
-                    with gr.Column(scale=2):
+                    with gr.Column():
                         chk_showmaskoffsets = gr.Checkbox(
                             label="Show mask overlay in preview",
                             value=roop.globals.CFG.show_mask_offsets,
@@ -84,6 +83,7 @@ def faceswap_tab():
                             0, 1.0, value=roop.globals.CFG.mask_right,
                             label="Offset Face Right", step=0.01, interactive=True,
                         )
+                    with gr.Column():
                         face_mask_blend = gr.Slider(
                             0, 100, value=roop.globals.CFG.face_mask_blend,
                             label="Face Mask Edge Blend", step=1, interactive=True,
@@ -108,8 +108,6 @@ def faceswap_tab():
                         bt_preview_mask = gr.Button(
                             "👥 Show Mask Preview", variant="secondary"
                         )
-                    with gr.Column(scale=2):
-                        local_folder = gr.Textbox(show_label=False, placeholder="/content/", interactive=True)
 
             with gr.Column(scale=2):
                 previewimage = gr.Image(label="Preview Image", height=576, interactive=False, visible=True, format=get_gradio_output_format())
@@ -216,7 +214,6 @@ def faceswap_tab():
     bt_destfiles.clear(fn=on_clear_destfiles, outputs=[target_faces])
     bt_clear_input_faces.click(fn=on_clear_input_faces, outputs=[input_faces])
 
-    bt_add_local.click(fn=on_add_local_folder, inputs=[local_folder], outputs=[bt_destfiles])
     bt_preview_mask.click(fn=on_preview_mask, inputs=[preview_frame_num, bt_destfiles, clip_text, selected_mask_engine], outputs=[previewimage]) 
 
     start_event = bt_start.click(fn=start_swap,
@@ -275,12 +272,6 @@ def on_mask_engine_changed(mask_engine):
         return gr.Textbox(interactive=True)
     return gr.Textbox(interactive=False)
 
-
-def on_add_local_folder(folder):
-    files = util.get_local_files_from_folder(folder)
-    if files is None:
-        gr.Warning("Empty folder or folder not found!")
-    return files
 
 
 def on_srcfile_changed(srcfiles, progress=gr.Progress()):

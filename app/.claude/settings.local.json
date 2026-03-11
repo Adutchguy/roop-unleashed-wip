@@ -3,7 +3,9 @@
     "allow": [
       "Bash(./env/Scripts/python.exe -c \"import torch; print\\(''torch:'', torch.__version__, ''CUDA:'', torch.version.cuda, ''available:'', torch.cuda.is_available\\(\\)\\)\")",
       "Bash(./env/Scripts/python.exe -c \"import onnxruntime as ort; print\\(''ort:'', ort.__version__, ''providers:'', ort.get_available_providers\\(\\)\\)\")",
-      "Bash(./env/Scripts/python.exe -c \"import onnx; print\\(''onnx:'', onnx.__version__\\)\")"
+      "Bash(./env/Scripts/python.exe -c \"import onnx; print\\(''onnx:'', onnx.__version__\\)\")",
+      "Bash(gh issue:*)",
+      "Bash(gh api:*)"
     ]
   }
 }

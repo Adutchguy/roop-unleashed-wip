@@ -14,15 +14,11 @@ from roop.FaceSet import FaceSet
 last_image = None
 
 
-IS_INPUT = True
-SELECTED_FACE_INDEX = 0
-
 SELECTED_INPUT_FACE_INDEX = 0
 SELECTED_TARGET_FACE_INDEX = 0
 
 input_faces = None
 target_faces = None
-face_selection = None
 previewimage = None
 
 selected_preview_index = 0
@@ -158,15 +154,6 @@ def faceswap_tab():
                     text_frame_clip = gr.Markdown('Processing frame range [0 - 0]')
                     set_frame_start = gr.Button("⬅ Set as Start", size='sm')
                     set_frame_end = gr.Button("➡ Set as End", size='sm')
-        with gr.Row(visible=False) as dynamic_face_selection:
-            with gr.Column(scale=2):
-                face_selection = gr.Gallery(label="Detected faces", allow_preview=False, preview=False, height=138, object_fit="cover", columns=32)
-            with gr.Column():
-                bt_faceselect = gr.Button("☑ Use selected face", size='sm')
-                bt_cancelfaceselect = gr.Button("Done", size='sm')
-            with gr.Column():
-                gr.Markdown(' ') 
-
         with gr.Row(variant='panel'):
             with gr.Column(scale=1):
                 selected_face_detection = gr.Dropdown(swap_choices, value=roop.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
@@ -244,7 +231,7 @@ def faceswap_tab():
     bt_move_right_target.click(fn=move_selected_target, inputs=[bt_move_right_target], outputs=[target_faces])
 
     bt_remove_selected_input_face.click(fn=remove_selected_input_face, outputs=[input_faces])
-    bt_srcfiles.upload(fn=on_srcfile_changed, show_progress='full', inputs=bt_srcfiles, outputs=[dynamic_face_selection, face_selection, input_faces, bt_srcfiles])
+    bt_srcfiles.upload(fn=on_srcfile_changed, show_progress='full', inputs=bt_srcfiles, outputs=[input_faces, bt_srcfiles])
 
     mask_top.release(fn=on_mask_top_changed, inputs=[mask_top], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     mask_bottom.release(fn=on_mask_bottom_changed, inputs=[mask_bottom], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
@@ -265,10 +252,6 @@ def faceswap_tab():
     bt_destfiles.clear(fn=on_clear_destfiles, outputs=[target_faces])
     resultfiles.select(fn=on_resultfiles_selected, inputs=[resultfiles], outputs=[resultimage, resultvideo])
 
-    face_selection.select(on_select_face, None, None)
-    bt_faceselect.click(fn=on_selected_face, outputs=[input_faces, target_faces, selected_face_detection])
-    bt_cancelfaceselect.click(fn=on_end_face_selection, outputs=[dynamic_face_selection, face_selection])
-
     bt_clear_input_faces.click(fn=on_clear_input_faces, outputs=[input_faces])
 
     bt_add_local.click(fn=on_add_local_folder, inputs=[local_folder], outputs=[bt_destfiles])
@@ -286,7 +269,7 @@ def faceswap_tab():
     bt_toggle_masking.click(fn=on_toggle_masking, inputs=[previewimage, maskimage], outputs=[previewimage, maskimage])            
     fake_preview.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     preview_frame_num.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden', )
-    bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[dynamic_face_selection, face_selection, target_faces, selected_face_detection])
+    bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[target_faces, selected_face_detection])
     set_frame_start.click(fn=on_set_frame, inputs=[set_frame_start, preview_frame_num], outputs=[text_frame_clip])
     set_frame_end.click(fn=on_set_frame, inputs=[set_frame_end, preview_frame_num], outputs=[text_frame_clip])
 
@@ -340,12 +323,10 @@ def on_add_local_folder(folder):
 
 
 def on_srcfile_changed(srcfiles, progress=gr.Progress()):
-    global SELECTION_FACES_DATA, IS_INPUT, input_faces, face_selection, last_image
-    
-    IS_INPUT = True
+    global input_faces, last_image
 
     if srcfiles is None or len(srcfiles) < 1:
-        return gr.Column(visible=False), None, ui.globals.ui_input_thumbs, None
+        return ui.globals.ui_input_thumbs, None
 
     for f in srcfiles:    
         source_path = f.name
@@ -366,8 +347,8 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                 if file.endswith(".png"):
                     filename = os.path.join(unzipfolder,file)
                     progress(0, desc="Extracting faceset")      
-                    SELECTION_FACES_DATA = extract_face_images(filename,  (False, 0))
-                    for f in SELECTION_FACES_DATA:
+                    selection_faces_data = extract_face_images(filename,  (False, 0))
+                    for f in selection_faces_data:
                         face = f[0]
                         face.mask_offsets = [0,0,0,0,20.0,10.0]
                         face_set.faces.append(face)
@@ -384,9 +365,9 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
         elif util.has_image_extension(source_path):
             progress(0, desc="Retrieving faces from image")      
             roop.globals.source_path = source_path
-            SELECTION_FACES_DATA = extract_face_images(roop.globals.source_path,  (False, 0))
+            selection_faces_data = extract_face_images(roop.globals.source_path,  (False, 0))
             progress(0.5, desc="Retrieving faces from image")
-            for f in SELECTION_FACES_DATA:
+            for f in selection_faces_data:
                 face_set = FaceSet()
                 face = f[0]
                 face.mask_offsets = [0,0,0,0,20.0,10.0]
@@ -401,7 +382,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
             "You have more than 6 input faces. Consider using the Face Management tab "
             "to consolidate multiple images of the same source into a single faceset file."
         )
-    return gr.Column(visible=False), None, ui.globals.ui_input_thumbs, None
+    return ui.globals.ui_input_thumbs, None
 
 
 def on_select_input_face(evt: gr.SelectData):
@@ -478,70 +459,28 @@ def remove_selected_target_face():
 
 
 def on_use_face_from_selected(files, frame_num):
-    global IS_INPUT, SELECTION_FACES_DATA
-
-    IS_INPUT = False
-    thumbs = []
-    
     roop.globals.target_path = files[selected_preview_index].name
+    faces_data = []
+
     if util.is_image(roop.globals.target_path) and not roop.globals.target_path.lower().endswith(('gif')):
-        SELECTION_FACES_DATA = extract_face_images(roop.globals.target_path,  (False, 0))
-        if len(SELECTION_FACES_DATA) > 0:
-            for f in SELECTION_FACES_DATA:
-                image = util.convert_to_gradio(f[1])
-                thumbs.append(image)
-        else:
-            gr.Info('No faces detected!')
-            roop.globals.target_path = None
-                
+        faces_data = extract_face_images(roop.globals.target_path, (False, 0))
     elif util.is_video(roop.globals.target_path) or roop.globals.target_path.lower().endswith(('gif')):
-        selected_frame = frame_num
-        SELECTION_FACES_DATA = extract_face_images(roop.globals.target_path, (True, selected_frame))
-        if len(SELECTION_FACES_DATA) > 0:
-            for f in SELECTION_FACES_DATA:
-                image = util.convert_to_gradio(f[1])
-                thumbs.append(image)
-        else:
-            gr.Info('No faces detected!')
-            roop.globals.target_path = None
+        faces_data = extract_face_images(roop.globals.target_path, (True, frame_num))
     else:
         gr.Info('Unknown image/video type!')
         roop.globals.target_path = None
+        return ui.globals.ui_target_thumbs, gr.Dropdown(visible=True)
 
-    if len(thumbs) == 1:
-        roop.globals.TARGET_FACES.append(SELECTION_FACES_DATA[0][0])
-        ui.globals.ui_target_thumbs.append(thumbs[0])
-        return gr.Row(visible=False), None, ui.globals.ui_target_thumbs, gr.Dropdown(value='Selected face')
+    if len(faces_data) == 0:
+        gr.Info('No faces detected!')
+        roop.globals.target_path = None
+        return ui.globals.ui_target_thumbs, gr.Dropdown(visible=True)
 
-    return gr.Row(visible=True), thumbs, gr.Gallery(visible=True), gr.Dropdown(visible=True)
+    for f in faces_data:
+        roop.globals.TARGET_FACES.append(f[0])
+        ui.globals.ui_target_thumbs.append(util.convert_to_gradio(f[1]))
 
-
-def on_select_face(evt: gr.SelectData):  # SelectData is a subclass of EventData
-    global SELECTED_FACE_INDEX
-    SELECTED_FACE_INDEX = evt.index
-
-
-def on_selected_face():
-    global IS_INPUT, SELECTED_FACE_INDEX, SELECTION_FACES_DATA
-    
-    fd = SELECTION_FACES_DATA[SELECTED_FACE_INDEX]
-    image = util.convert_to_gradio(fd[1])
-    if IS_INPUT:
-        face_set = FaceSet()
-        fd[0].mask_offsets = [0,0,0,0,20.0,10.0]
-        face_set.faces.append(fd[0])
-        roop.globals.INPUT_FACESETS.append(face_set)
-        ui.globals.ui_input_thumbs.append(image)
-        return ui.globals.ui_input_thumbs, gr.Gallery(visible=True), gr.Dropdown(visible=True)
-    else:
-        roop.globals.TARGET_FACES.append(fd[0])
-        ui.globals.ui_target_thumbs.append(image)
-        return gr.Gallery(visible=True), ui.globals.ui_target_thumbs, gr.Dropdown(value='Selected face')
-
-#        bt_faceselect.click(fn=on_selected_face, outputs=[dynamic_face_selection, face_selection, input_faces, target_faces])
-
-def on_end_face_selection():
-    return gr.Column(visible=False), None
+    return ui.globals.ui_target_thumbs, gr.Dropdown(value='Selected face')
 
 
 def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection, face_distance, blend_ratio,

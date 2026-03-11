@@ -532,11 +532,12 @@ class ProcessMgr():
             fake_frame = cv2.resize(fake_frame, (upscale, upscale), cv2.INTER_CUBIC)
         mask_offsets = [0, 0, 0, 0, 20.0, 10.0] if inputface is None else inputface.mask_offsets
 
+        face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
 
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame)
@@ -572,11 +573,10 @@ class ProcessMgr():
         return blended_image.astype(np.uint8)
 
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
-        face_matte = np.full((target_img.shape[0], target_img.shape[1]), 255, dtype=np.uint8)
         img_matte = np.zeros((upsk_face.shape[0], upsk_face.shape[1]), dtype=np.uint8)
 
         w = img_matte.shape[1]
@@ -596,10 +596,15 @@ class ProcessMgr():
         img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
+        # Constrain mask to actual face outline using landmark convex hull.
+        # For angled/profile faces this prevents the warped ellipse from covering
+        # background regions where the swap model put grey fill pixels.
+        if face_landmarks is not None:
+            lm_mask = self.create_landmark_mask(face_landmarks, target_img.shape, mask_offsets[4])
+            img_matte = np.minimum(img_matte, lm_mask)
+
         img_matte = self.blur_area(img_matte, mask_offsets[4])
         img_matte = img_matte.astype(np.float32) / 255
-        face_matte = face_matte.astype(np.float32) / 255
-        img_matte = np.minimum(face_matte, img_matte)
 
         # Save 2D mask before reshape so overlay can use gradient values
         mask_2d = img_matte if self.options.show_face_area_overlay else None
@@ -640,6 +645,62 @@ class ProcessMgr():
         blend_px = max(1, int(mask_size * face_mask_blend / 200))
         blur_size = blend_px * 2 + 1
         return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
+
+
+    def create_landmark_mask(self, landmarks_2d, frame_shape, blend_amount):
+        """Build a binary mask from the convex hull of the 106-pt face landmarks.
+
+        Works in target-frame space so the shape naturally matches the actual
+        visible face area regardless of yaw/pitch — unlike the ellipse which is
+        computed in canonical 512×512 face-space and can bleed past the face
+        edge on profile shots.
+
+        A forehead extension is added because the 106-pt model only reaches
+        the eyebrow line; we project upward by ~60 % of the brow-to-chin
+        distance so the full forehead is covered on frontal faces without
+        over-extending on profiles.
+        """
+        mask = np.zeros(frame_shape[:2], dtype=np.uint8)
+        pts = landmarks_2d.astype(np.int32)
+
+        # Eyebrow region is roughly indices 33-52; find the topmost y there.
+        brow_pts = pts[33:53]
+        top_brow_y = int(np.min(brow_pts[:, 1]))
+        chin_y    = int(np.max(pts[:, 1]))
+        face_h    = max(1, chin_y - top_brow_y)
+
+        # Extend upward to cover the forehead.
+        forehead_y = max(0, top_brow_y - int(face_h * 0.6))
+
+        # Horizontal extent of the top of the face (near brow line).
+        top_zone = pts[pts[:, 1] < top_brow_y + int(face_h * 0.15)]
+        if len(top_zone) >= 2:
+            left_x  = int(np.min(top_zone[:, 0]))
+            right_x = int(np.max(top_zone[:, 0]))
+        else:
+            left_x  = int(np.min(pts[:, 0]))
+            right_x = int(np.max(pts[:, 0]))
+
+        forehead_pts = np.array([
+            [left_x,                    forehead_y],
+            [(left_x + right_x) // 2,  forehead_y],
+            [right_x,                   forehead_y],
+        ], dtype=np.int32)
+
+        all_pts = np.vstack([pts, forehead_pts])
+        hull    = cv2.convexHull(all_pts)
+        cv2.fillConvexPoly(mask, hull, 255)
+
+        # Dilate slightly so the hull doesn't clip skin right at the landmark
+        # boundary — especially at jaw/temple edges.
+        if blend_amount > 0:
+            face_w    = max(1, right_x - left_x)
+            expand_px = max(1, int(np.sqrt(face_h * face_w) * blend_amount / 400))
+            kernel    = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (expand_px * 2 + 1, expand_px * 2 + 1))
+            mask = cv2.dilate(mask, kernel, iterations=1)
+
+        return mask
 
 
     def prepare_crop_frame(self, swap_frame):

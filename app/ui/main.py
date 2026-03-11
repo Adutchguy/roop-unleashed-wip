@@ -391,7 +391,14 @@ def run():
     .generating { border-color: #50a070 !important; }
 
     /* ── Toasts ── */
+    /* The wrapper is always in the DOM; keep it invisible when empty */
     .toast-wrap {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+    /* Style individual toast items instead */
+    .toast-wrap .toast {
         background: #1c1c1c !important;
         border: 1px solid #383838 !important;
         border-radius: 8px !important;
@@ -414,6 +421,8 @@ def run():
 
     /* ── Preserved layout rules ── */
     span { color: var(--block-info-text-color) }
+    /* Remove the visible block border from the version-info HTML element */
+    #versions { border: none !important; background: transparent !important; }
     #fixedheight {
         max-height: 238.4px;
         overflow-y: auto !important;

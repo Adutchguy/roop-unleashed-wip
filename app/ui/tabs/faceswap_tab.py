@@ -136,7 +136,6 @@ def faceswap_tab():
                     with gr.Column(scale=2):
                         local_folder = gr.Textbox(show_label=False, placeholder="/content/", interactive=True)
                 with gr.Row(variant='panel'):
-                    gr.Markdown('')
                     forced_fps = gr.Slider(minimum=0, maximum=120, value=0, label="Video FPS", info='Overrides detected fps if not 0', step=1.0, interactive=True, container=True)
 
             with gr.Column(scale=2):

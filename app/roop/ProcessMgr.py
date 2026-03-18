@@ -540,7 +540,7 @@ class ProcessMgr():
             result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
 
         if self.options.restore_original_mouth:
-            mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame)
+            mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
 
         if rotation_action is not None:
@@ -753,11 +753,17 @@ class ProcessMgr():
         return np.uint8(result)
 
 
-    def create_mouth_mask(self, face:Face, frame:Frame):
+    def create_mouth_mask(self, face:Face, frame:Frame, mask_offsets=None):
         mouth_cutout = None
         mouth_mask_points = None
         # Initialize so the return is always safe even when landmarks is absent
         min_x, min_y, max_x, max_y = 0, 0, 0, 0
+        # Scale factors for each side of the mouth bounding box (indices 6-9).
+        # 1.0 = default padding; 2.0 = double padding (larger mouth region).
+        if mask_offsets is not None and len(mask_offsets) >= 10:
+            s_top, s_bot, s_left, s_right = mask_offsets[6], mask_offsets[7], mask_offsets[8], mask_offsets[9]
+        else:
+            s_top = s_bot = s_left = s_right = 1.0
         landmarks = face.landmark_2d_106
         if landmarks is not None:
             mouth_points = landmarks[52:71].astype(np.int32)
@@ -765,13 +771,13 @@ class ProcessMgr():
             raw_max_x, raw_max_y = np.max(mouth_points, axis=0)
             mouth_w = max(1, raw_max_x - raw_min_x)
             mouth_h = max(1, raw_max_y - raw_min_y)
-            # Proportional padding instead of hardcoded magic numbers
-            pad_x     = int(mouth_w * 0.4)
-            pad_top   = int(mouth_h * 0.35)
-            pad_bottom = int(mouth_h * 0.5)
-            min_x = max(0, raw_min_x - pad_x)
+            pad_top    = int(mouth_h * 0.35 * s_top)
+            pad_bottom = int(mouth_h * 0.50 * s_bot)
+            pad_left   = int(mouth_w * 0.40 * s_left)
+            pad_right  = int(mouth_w * 0.40 * s_right)
+            min_x = max(0, raw_min_x - pad_left)
             min_y = max(0, raw_min_y - pad_top)
-            max_x = min(frame.shape[1], raw_max_x + pad_x)
+            max_x = min(frame.shape[1], raw_max_x + pad_right)
             max_y = min(frame.shape[0], raw_max_y + pad_bottom)
             mouth_cutout = frame[min_y:max_y, min_x:max_x].copy()
             # Landmark points in cutout-local coordinates for polygon masking

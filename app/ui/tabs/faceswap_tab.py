@@ -68,28 +68,44 @@ def faceswap_tab():
                             interactive=True,
                         )
                         mask_top = gr.Slider(
-                            0, 1.0, value=roop.globals.CFG.mask_top,
+                            0, 2.0, value=roop.globals.CFG.mask_top,
                             label="Offset Face Top", step=0.01, interactive=True,
                         )
                         mask_bottom = gr.Slider(
-                            0, 1.0, value=roop.globals.CFG.mask_bottom,
+                            0, 2.0, value=roop.globals.CFG.mask_bottom,
                             label="Offset Face Bottom", step=0.01, interactive=True,
                         )
                         mask_left = gr.Slider(
-                            0, 1.0, value=roop.globals.CFG.mask_left,
+                            0, 2.0, value=roop.globals.CFG.mask_left,
                             label="Offset Face Left", step=0.01, interactive=True,
                         )
                         mask_right = gr.Slider(
-                            0, 1.0, value=roop.globals.CFG.mask_right,
+                            0, 2.0, value=roop.globals.CFG.mask_right,
                             label="Offset Face Right", step=0.01, interactive=True,
                         )
-                    with gr.Column():
                         face_mask_blend = gr.Slider(
-                            0, 100, value=roop.globals.CFG.face_mask_blend,
+                            0, 200, value=roop.globals.CFG.face_mask_blend,
                             label="Face Mask Edge Blend", step=1, interactive=True,
                         )
+                    with gr.Column():
+                        mouth_top_scale = gr.Slider(
+                            0, 2.0, value=roop.globals.CFG.mouth_top_scale,
+                            label="Mouth Mask Top", step=0.01, interactive=True,
+                        )
+                        mouth_bottom_scale = gr.Slider(
+                            0, 2.0, value=roop.globals.CFG.mouth_bottom_scale,
+                            label="Mouth Mask Bottom", step=0.01, interactive=True,
+                        )
+                        mouth_left_scale = gr.Slider(
+                            0, 2.0, value=roop.globals.CFG.mouth_left_scale,
+                            label="Mouth Mask Left", step=0.01, interactive=True,
+                        )
+                        mouth_right_scale = gr.Slider(
+                            0, 2.0, value=roop.globals.CFG.mouth_right_scale,
+                            label="Mouth Mask Right", step=0.01, interactive=True,
+                        )
                         mouth_mask_blend = gr.Slider(
-                            0, 30, value=roop.globals.CFG.mouth_mask_blend,
+                            0, 200, value=roop.globals.CFG.mouth_mask_blend,
                             label="Mouth Mask Edge Blend", step=1, interactive=True,
                         )
                         bt_toggle_masking = gr.Button(
@@ -182,6 +198,10 @@ def faceswap_tab():
     ui.globals.ui_mask_right = mask_right
     ui.globals.ui_face_mask_blend = face_mask_blend
     ui.globals.ui_mouth_mask_blend = mouth_mask_blend
+    ui.globals.ui_mouth_top_scale = mouth_top_scale
+    ui.globals.ui_mouth_bottom_scale = mouth_bottom_scale
+    ui.globals.ui_mouth_left_scale = mouth_left_scale
+    ui.globals.ui_mouth_right_scale = mouth_right_scale
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, maskimage, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale]
@@ -202,6 +222,10 @@ def faceswap_tab():
     mask_right.release(fn=on_mask_right_changed, inputs=[mask_right], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     face_mask_blend.release(fn=on_face_mask_blend_changed, inputs=[face_mask_blend], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     mouth_mask_blend.release(fn=on_mouth_mask_blend_changed, inputs=[mouth_mask_blend], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mouth_top_scale.release(fn=on_mouth_top_scale_changed, inputs=[mouth_top_scale], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mouth_bottom_scale.release(fn=on_mouth_bottom_scale_changed, inputs=[mouth_bottom_scale], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mouth_left_scale.release(fn=on_mouth_left_scale_changed, inputs=[mouth_left_scale], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    mouth_right_scale.release(fn=on_mouth_right_scale_changed, inputs=[mouth_right_scale], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_showmaskoffsets.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_restoreoriginalmouth.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     selected_mask_engine.change(fn=on_mask_engine_changed, inputs=[selected_mask_engine], outputs=[clip_text], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
@@ -252,19 +276,27 @@ def on_face_mask_blend_changed(value):
 def on_mouth_mask_blend_changed(value):
     set_mask_offset(5, value)
 
+def on_mouth_top_scale_changed(value):
+    set_mask_offset(6, value)
+
+def on_mouth_bottom_scale_changed(value):
+    set_mask_offset(7, value)
+
+def on_mouth_left_scale_changed(value):
+    set_mask_offset(8, value)
+
+def on_mouth_right_scale_changed(value):
+    set_mask_offset(9, value)
+
 
 def set_mask_offset(index, mask_offset):
     global SELECTED_INPUT_FACE_INDEX
 
     if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
         offs = roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
+        while len(offs) < 10:
+            offs.append(1.0)
         offs[index] = mask_offset
-        if offs[0] + offs[1] > 0.99:
-            offs[0] = 0.99
-            offs[1] = 0.0
-        if offs[2] + offs[3] > 0.99:
-            offs[2] = 0.99
-            offs[3] = 0.0
         roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = offs
 
 def on_mask_engine_changed(mask_engine):
@@ -302,7 +334,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                     selection_faces_data = extract_face_images(filename,  (False, 0))
                     for f in selection_faces_data:
                         face = f[0]
-                        face.mask_offsets = [0,0,0,0,20.0,10.0]
+                        face.mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
                         face_set.faces.append(face)
                         if is_first: 
                             image = util.convert_to_gradio(f[1])
@@ -322,7 +354,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
             for f in selection_faces_data:
                 face_set = FaceSet()
                 face = f[0]
-                face.mask_offsets = [0,0,0,0,20.0,10.0]
+                face.mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
                 face_set.faces.append(face)
                 image = util.convert_to_gradio(f[1])
                 ui.globals.ui_input_thumbs.append(image)
@@ -442,11 +474,13 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     from roop.core import live_swap, get_processing_plugins
 
     manual_masking = False
-    mask_offsets = [0,0,0,0,20.0,10.0]
+    mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
     if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
         if not hasattr(roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0], 'mask_offsets'):
             roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = list(mask_offsets)
         mask_offsets = roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
+        while len(mask_offsets) < 10:
+            mask_offsets.append(1.0)
 
     timeinfo = '0:00:00'
     if files is None or selected_preview_index >= len(files) or frame_num is None:

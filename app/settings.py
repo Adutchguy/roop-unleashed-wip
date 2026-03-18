@@ -63,6 +63,10 @@ class Settings:
         self.mask_right = self.default_get(data, 'mask_right', 0.0)
         self.face_mask_blend = self.default_get(data, 'face_mask_blend', 20.0)
         self.mouth_mask_blend = self.default_get(data, 'mouth_mask_blend', 10.0)
+        self.mouth_top_scale = self.default_get(data, 'mouth_top_scale', 1.0)
+        self.mouth_bottom_scale = self.default_get(data, 'mouth_bottom_scale', 1.0)
+        self.mouth_left_scale = self.default_get(data, 'mouth_left_scale', 1.0)
+        self.mouth_right_scale = self.default_get(data, 'mouth_right_scale', 1.0)
 
 
 
@@ -112,6 +116,10 @@ class Settings:
             'mask_right': self.mask_right,
             'face_mask_blend': self.face_mask_blend,
             'mouth_mask_blend': self.mouth_mask_blend,
+            'mouth_top_scale': self.mouth_top_scale,
+            'mouth_bottom_scale': self.mouth_bottom_scale,
+            'mouth_left_scale': self.mouth_left_scale,
+            'mouth_right_scale': self.mouth_right_scale,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

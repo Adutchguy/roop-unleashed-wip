@@ -33,6 +33,12 @@ ui_mask_left = None
 ui_mask_right = None
 ui_mask_erosion = None
 ui_mask_blur = None
+ui_face_mask_blend = None
+ui_mouth_mask_blend = None
+ui_mouth_top_scale = None
+ui_mouth_bottom_scale = None
+ui_mouth_left_scale = None
+ui_mouth_right_scale = None
 
 
 

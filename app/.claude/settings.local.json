@@ -5,7 +5,8 @@
       "Bash(./env/Scripts/python.exe -c \"import onnxruntime as ort; print\\(''ort:'', ort.__version__, ''providers:'', ort.get_available_providers\\(\\)\\)\")",
       "Bash(./env/Scripts/python.exe -c \"import onnx; print\\(''onnx:'', onnx.__version__\\)\")",
       "Bash(gh issue:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(C:/pinokio/api/roop-unleashed/app/env/Scripts/pip freeze:*)"
     ]
   }
 }

@@ -24,16 +24,4 @@ app/output
 app/config.yaml
 app/saved_configs
 
-# User media files — scope to output/temp only, NOT root (icon.png must be tracked)
-app/output/**/*.png
-app/output/**/*.jpg
-app/output/**/*.jpeg
-app/output/**/*.mp4
-app/output/**/*.webm
-app/output/**/*.webp
-app/output/**/*.avi
-app/output/**/*.mkv
-app/temp/**/*.png
-app/temp/**/*.jpg
-app/temp/**/*.jpeg
-app/temp/**/*.mp4
+# app/output and app/temp are already ignored above as directories

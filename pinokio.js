@@ -11,7 +11,8 @@ module.exports = {
       start: info.running("start.js"),
       update: info.running("update.js"),
       reset: info.running("reset.js"),
-      link: info.running("link.js")
+      link: info.running("link.js"),
+      fix_tensorrt: info.running("fix_tensorrt.js")
     }
     if (running.install) {
       return [{
@@ -49,6 +50,13 @@ module.exports = {
           text: "Updating",
           href: "update.js",
         }]
+      } else if (running.fix_tensorrt) {
+        return [{
+          default: true,
+          icon: 'fa-solid fa-terminal',
+          text: "Installing TensorRT",
+          href: "fix_tensorrt.js",
+        }]
       } else if (running.reset) {
         return [{
           default: true,
@@ -77,6 +85,10 @@ module.exports = {
           icon: "fa-solid fa-plug",
           text: "Install",
           href: "install.js",
+        }, {
+          icon: "fa-solid fa-bolt",
+          text: "<div><strong>Fix TensorRT</strong><div>Install missing TensorRT runtime package</div></div>",
+          href: "fix_tensorrt.js",
         }, {
           icon: "fa-solid fa-file-zipper",
           text: "<div><strong>Save Disk Space</strong><div>Deduplicates redundant library files</div></div>",

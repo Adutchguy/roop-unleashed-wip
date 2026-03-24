@@ -40,6 +40,22 @@ def run():
     if roop.globals.CFG.provider in ("cuda", "tensorrt") and util.has_cuda_device() == False:
        roop.globals.CFG.provider = "cpu"
 
+    # If TensorRT is selected, verify its runtime DLLs are actually loadable.
+    # onnxruntime lists TensorrtExecutionProvider as "available" even when the
+    # TensorRT runtime libraries (nvinfer.dll etc.) are missing from the system.
+    # Attempting to use it then produces error 126 and falls back silently to CPU,
+    # losing all GPU acceleration.  Detect this early and fall back to CUDA instead.
+    if roop.globals.CFG.provider == "tensorrt":
+        _trt_ok = False
+        try:
+            import tensorrt  # noqa: F401 – presence means DLLs are registered
+            _trt_ok = True
+        except ImportError:
+            pass
+        if not _trt_ok:
+            print("TensorRT runtime libraries not found – falling back to CUDA provider.")
+            roop.globals.CFG.provider = "cuda"
+
     roop.globals.execution_providers = decode_execution_providers([roop.globals.CFG.provider])
     gputype = util.get_device()
     if gputype == 'cuda':

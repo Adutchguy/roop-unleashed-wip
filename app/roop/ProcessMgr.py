@@ -696,11 +696,14 @@ class ProcessMgr():
             subsample_size = self.options.subsample_size if self.options.subsample_size else 512
             M_ref = estimate_norm(self.mask_ref_kps, subsample_size)
 
-            # 3. Build the combined 2×3 warp: current-frame pixel → reference-frame pixel.
-            #    cv2.warpAffine uses inverse mapping: dst(p) = src(M·p).
+            # 3. Build the combined 2×3 forward warp: reference-frame → current-frame.
+            #    cv2.warpAffine(src, T_fwd, dsize) samples src at T_fwd^{-1}(p) for each
+            #    output pixel p, so passing T_fwd = inv(M_cur) @ M_ref yields the backward
+            #    map T_fwd^{-1} = inv(M_ref) @ M_cur, which correctly maps each current-frame
+            #    pixel through canonical space to the corresponding reference-frame position.
             M_ref_3x3 = np.vstack([M_ref,       [0.0, 0.0, 1.0]])
             M_cur_3x3 = np.vstack([cur_matrix,  [0.0, 0.0, 1.0]])
-            T_3x3 = np.linalg.inv(M_ref_3x3) @ M_cur_3x3
+            T_3x3 = np.linalg.inv(M_cur_3x3) @ M_ref_3x3
             T_2x3 = T_3x3[:2, :]
 
             warped = cv2.warpAffine(

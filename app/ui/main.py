@@ -9,7 +9,7 @@ import roop.utilities as util
 import ui.globals as uii
 import ui.globals
 
-from ui.tabs.faceswap_tab import faceswap_tab
+from ui.tabs.faceswap_tab import faceswap_tab, MASKING_HEAD_JS
 from ui.tabs.facemgr_tab import facemgr_tab
 from ui.tabs.extras_tab import extras_tab
 from ui.tabs.settings_tab import settings_tab
@@ -444,6 +444,8 @@ def run():
         overflow-y: auto !important;
     }
     .image-container.svelte-1l6wqyv { height: 100% }
+    /* Original frame component — kept in DOM for JS access but never shown on the page */
+    #roop_original_frame { display: none !important; }
     """
 
     while run_server:
@@ -464,7 +466,7 @@ def run():
         if server_port <= 0:
             server_port = None
         ssl_verify = True
-        with gr.Blocks(title=f'{roop.metadata.name} {roop.metadata.version}', theme=gr.themes.Base(), css=mycss, delete_cache=(60, 86400)) as ui:
+        with gr.Blocks(title=f'{roop.metadata.name} {roop.metadata.version}', theme=gr.themes.Base(), css=mycss, delete_cache=(60, 86400), head=MASKING_HEAD_JS) as ui:
             with gr.Row(variant='compact'):
                     gr.HTML(util.create_version_html(), elem_id="versions")
                     bt_save_session = gr.Button("💾 Save Settings", size='sm', variant='primary', scale=0)
@@ -507,6 +509,9 @@ _SESSION_CFG_KEYS = [
     'output_method', 'mask_engine', 'mask_clip_text', 'show_mask_offsets',
     'restore_original_mouth', 'mask_top', 'mask_bottom', 'mask_left', 'mask_right',
     'face_mask_blend', 'mouth_mask_blend',
+    # Additional settings added in later sessions
+    'restore_occluders', 'occluder_blend', 'temporal_threshold',
+    'mouth_top_scale', 'mouth_bottom_scale', 'mouth_left_scale', 'mouth_right_scale',
 ]
 
 
@@ -536,6 +541,14 @@ def _session_components():
         ui.globals.ui_mask_right,
         ui.globals.ui_face_mask_blend,
         ui.globals.ui_mouth_mask_blend,
+        # Additional settings added in later sessions
+        ui.globals.ui_chk_restore_occluders,
+        ui.globals.ui_occluder_blend,
+        ui.globals.ui_temporal_threshold,
+        ui.globals.ui_mouth_top_scale,
+        ui.globals.ui_mouth_bottom_scale,
+        ui.globals.ui_mouth_left_scale,
+        ui.globals.ui_mouth_right_scale,
     ]
 
 

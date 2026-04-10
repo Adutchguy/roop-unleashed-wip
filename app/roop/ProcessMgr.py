@@ -87,6 +87,11 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.output_to_file = None
         self.output_to_cam = None
+        # Per-face running mean for temporal artifact detection (#5)
+        self.face_temporal_cache = {}
+        # Manual masking (include = force swap, exclude = keep original)
+        self.include_mask = None
+        self.exclude_mask = None
 
         if progress is not None:
             self.progress_gradio = progress
@@ -131,17 +136,43 @@ class ProcessMgr():
                 print(f"Not using {module}")
         self.processors = newprocessors
 
-        if isinstance(self.options.imagemask, dict) and self.options.imagemask.get("layers") and len(self.options.imagemask["layers"]) > 0:
-            self.options.imagemask = self.options.imagemask.get("layers")[0]
-            # Get rid of alpha
-            self.options.imagemask = cv2.cvtColor(self.options.imagemask, cv2.COLOR_RGBA2GRAY)
-            if np.any(self.options.imagemask):
-                mo = self.input_face_datas[0].faces[0].mask_offsets
-                self.options.imagemask = self.blur_area(self.options.imagemask, mo[4])
-                self.options.imagemask = self.options.imagemask.astype(np.float32) / 255
-                self.options.imagemask = cv2.cvtColor(self.options.imagemask, cv2.COLOR_GRAY2RGB)
-            else:
-                self.options.imagemask = None
+        # ── Parse manual mask JSON (written by the canvas masking modal) ──────
+        # Format: '{"include": "data:image/png;base64,...", "exclude": "..."}'
+        # include mask → float32 H×W, 1.0 = force swap in this pixel
+        # exclude mask → float32 H×W, 1.0 = keep original in this pixel
+        self.include_mask = None
+        self.exclude_mask = None
+        mask_src = self.options.imagemask
+        if isinstance(mask_src, str) and mask_src.strip().startswith('{'):
+            try:
+                import json as _json, base64 as _b64
+                mask_data = _json.loads(mask_src)
+                blend_amount = 20.0
+                if self.input_face_datas and len(self.input_face_datas[0].faces) > 0:
+                    blend_amount = self.input_face_datas[0].faces[0].mask_offsets[4]
+
+                def _decode_mask(data_url):
+                    if not data_url:
+                        return None
+                    try:
+                        _, b64 = data_url.split(',', 1)
+                        arr = np.frombuffer(_b64.b64decode(b64), dtype=np.uint8)
+                        img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+                        if img is None or not np.any(img):
+                            return None
+                        img = self.blur_area(img, blend_amount)
+                        return img.astype(np.float32) / 255.0
+                    except Exception:
+                        return None
+
+                self.include_mask = _decode_mask(mask_data.get('include'))
+                self.exclude_mask = _decode_mask(mask_data.get('exclude'))
+            except Exception as e:
+                print(f"[ProcessMgr] Failed to parse mask JSON: {e}")
+                self.include_mask = None
+                self.exclude_mask = None
+        # Clear legacy imagemask — we only use include_mask / exclude_mask now
+        self.options.imagemask = None
 
         self.options.frame_processing = False
         for p in self.processors:
@@ -418,8 +449,30 @@ class ProcessMgr():
         if num_faces_found == 0:
             return num_faces_found, frame
 
-        if self.options.imagemask is not None and self.options.imagemask.shape == frame.shape:
-            temp_frame = self.simple_blend_with_mask(temp_frame, frame, self.options.imagemask)
+        # ── Apply manual include / exclude masks ────────────────────────────
+        # exclude mask (red paint):  mask=1 → keep original pixel
+        # include mask (green paint): mask=0 → show swap (overrides exclude)
+        # Combined: start with 0 everywhere (show swap), add exclude, then
+        # subtract include so painted-green areas always show the swap.
+        if self.include_mask is not None or self.exclude_mask is not None:
+            h, w = frame.shape[:2]
+            combined = np.zeros((h, w), dtype=np.float32)
+
+            if self.exclude_mask is not None:
+                exc = self.exclude_mask
+                if exc.shape[:2] != (h, w):
+                    exc = cv2.resize(exc, (w, h), interpolation=cv2.INTER_LINEAR)
+                combined = np.maximum(combined, exc)
+
+            if self.include_mask is not None:
+                inc = self.include_mask
+                if inc.shape[:2] != (h, w):
+                    inc = cv2.resize(inc, (w, h), interpolation=cv2.INTER_LINEAR)
+                # Include overrides exclude: force swap (mask → 0) where painted green
+                combined = combined * (1.0 - inc)
+
+            temp_frame = self.simple_blend_with_mask(temp_frame, frame, combined)
+
         return num_faces_found, temp_frame
 
 
@@ -543,6 +596,11 @@ class ProcessMgr():
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
 
+        # #5 Temporal artifact detection — apply after mouth restore so the
+        # temporal baseline tracks the mouth-restored frame, not raw swap output.
+        if self.options.restore_occluders:
+            result = self.apply_temporal_occluder_restore(result, frame, target_face)
+
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
             result = self.paste_simple(fake_frame, saved_frame, startX, startY)
@@ -569,6 +627,12 @@ class ProcessMgr():
         return dest
 
     def simple_blend_with_mask(self, image1, image2, mask):
+        # mask may be 2-D (H×W) or 3-D (H×W×3); normalise to H×W×1 so it
+        # broadcasts cleanly against BGR images without needing an explicit loop.
+        if mask.ndim == 2:
+            mask = mask[:, :, np.newaxis]
+        elif mask.shape[2] == 3:
+            mask = mask[:, :, :1]   # collapse to single channel
         blended_image = image1.astype(np.float32) * (1.0 - mask) + image2.astype(np.float32) * mask
         return blended_image.astype(np.uint8)
 
@@ -606,8 +670,9 @@ class ProcessMgr():
         img_matte = self.blur_area(img_matte, mask_offsets[4])
         img_matte = img_matte.astype(np.float32) / 255
 
-        # Save 2D mask before reshape so overlay can use gradient values
-        mask_2d = img_matte if self.options.show_face_area_overlay else None
+        # Save 2D mask before reshape — used by overlay and occluder restore
+        need_mask_2d = self.options.show_face_area_overlay or self.options.restore_occluders
+        mask_2d = img_matte.copy() if need_mask_2d else None
 
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
         paste_face = cv2.warpAffine(upsk_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
@@ -617,6 +682,12 @@ class ProcessMgr():
 
         paste_face = img_matte * paste_face
         paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
+
+        # #3 Skin-tone occluder restore: within the face mask, detect non-skin pixels
+        # in the original frame (hair strands, drool, makeup patches that straddle the
+        # face edge, etc.) and blend them back on top of the swap result.
+        if self.options.restore_occluders and mask_2d is not None:
+            paste_face = self.apply_skin_occluder_restore(paste_face, target_img, mask_2d)
 
         if self.options.show_face_area_overlay:
             # Gradient overlay: green in the core (mask≈1), yellow/orange at the
@@ -629,6 +700,108 @@ class ProcessMgr():
 
         return paste_face.astype(np.uint8)
 
+
+    # ── Occluder restore helpers ────────────────────────────────────────────────
+
+    def apply_skin_occluder_restore(self, swapped_frame: np.ndarray, original_frame: np.ndarray, face_mask_2d: np.ndarray) -> np.ndarray:
+        """#3 — Re-composite non-skin pixels from the original frame on top of the swap.
+
+        Works in HSV space: pixels inside the face mask region that fall outside
+        a broad skin-tone hue/saturation band (dark hair strands, wet artifacts
+        like drool/spit, vivid coloured occlusions) are blended back from the
+        original frame.  `face_mask_2d` is a float32 H×W array (0-1) that
+        constrains the effect to the actual face swap region so background pixels
+        are never touched.
+        """
+        orig = original_frame.astype(np.float32)
+        hsv  = cv2.cvtColor(original_frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+
+        # Broad skin range in HSV (covers pale to dark skin tones).
+        # Hue 0-35 captures orange/yellow/red; 155-180 wraps around the red end.
+        skin = (
+            ((h <= 35) | (h >= 155)) &
+            (s >= 15) &   # avoid achromatic greys/whites being flagged as non-skin
+            (v >= 30)     # avoid very dark shadows being aggressively restored
+        ).astype(np.float32)
+
+        # Occluder weight: non-skin pixels, weighted by how strongly they fall
+        # inside the face mask (so edges get gentler treatment).
+        occluder = (1.0 - skin) * face_mask_2d
+
+        # Smooth edges so the restore doesn't produce hard pixel-level transitions.
+        occluder = cv2.GaussianBlur(occluder, (7, 7), 0)
+        occluder = np.clip(occluder * self.options.occluder_blend, 0.0, 1.0)[:, :, np.newaxis]
+
+        result = swapped_frame * (1.0 - occluder) + orig * occluder
+        return result
+
+
+    def _face_temporal_key(self, target_face: Face) -> tuple:
+        """Stable per-face key based on quantised bounding-box centre."""
+        bbox = target_face.bbox.astype(int)
+        cx = (bbox[0] + bbox[2]) // 2
+        cy = (bbox[1] + bbox[3]) // 2
+        return (cx // 50, cy // 50)
+
+
+    def apply_temporal_occluder_restore(self, swapped_frame: np.ndarray, original_frame: np.ndarray, target_face: Face) -> np.ndarray:
+        """#5 — Detect transient artifacts via per-face temporal comparison.
+
+        Maintains a per-face exponential running mean of the original frame.
+        Pixels that deviate sharply from the mean (sudden drool strand, spit,
+        vomit splash, hair that swings across the face) are flagged and the
+        original pixel is composited back over the swap result.
+
+        The running mean is updated only on *stable* pixels so transient
+        artifacts don't corrupt the baseline.
+        """
+        bbox = target_face.bbox.astype(int)
+        x1 = max(0, bbox[0])
+        y1 = max(0, bbox[1])
+        x2 = min(original_frame.shape[1], bbox[2])
+        y2 = min(original_frame.shape[0], bbox[3])
+        if x2 <= x1 or y2 <= y1:
+            return swapped_frame
+
+        face_key   = self._face_temporal_key(target_face)
+        current    = original_frame[y1:y2, x1:x2].astype(np.float32)
+        threshold  = self.options.temporal_threshold
+        alpha      = 0.08   # EMA decay — lower = slower adaptation, more stable baseline
+
+        if face_key not in self.face_temporal_cache:
+            # Warm up: initialise mean from first frame, nothing to restore yet.
+            self.face_temporal_cache[face_key] = current.copy()
+            return swapped_frame
+
+        mean = self.face_temporal_cache[face_key]
+
+        # Resize cached mean if the face bbox changed size between frames.
+        if mean.shape != current.shape:
+            mean = cv2.resize(mean, (current.shape[1], current.shape[0]))
+
+        # Per-pixel L2 deviation from baseline.
+        deviation = np.sqrt(np.sum((current - mean) ** 2, axis=2))  # H×W
+
+        # Soft threshold → smooth occluder weight (0 = no artifact, 1 = clear artifact).
+        occluder_w = np.clip((deviation - threshold) / max(threshold, 1.0), 0.0, 1.0)
+        occluder_w = cv2.GaussianBlur(occluder_w.astype(np.float32), (11, 11), 0)
+        occluder_w = np.clip(occluder_w * self.options.occluder_blend, 0.0, 1.0)[:, :, np.newaxis]
+
+        # Update mean only on stable (non-artifact) pixels to keep baseline clean.
+        stable = (deviation < threshold).astype(np.float32)[:, :, np.newaxis]
+        self.face_temporal_cache[face_key] = mean + alpha * stable * (current - mean)
+
+        # Blend original over swap where artifacts detected.
+        swapped_region = swapped_frame[y1:y2, x1:x2].astype(np.float32)
+        orig_region    = current   # already float32
+        blended        = swapped_region * (1.0 - occluder_w) + orig_region * occluder_w
+
+        result              = swapped_frame.copy()
+        result[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
+        return result
+
+    # ── End occluder restore helpers ────────────────────────────────────────────
 
     def blur_area(self, img_matte, face_mask_blend):
         # Always apply minimal anti-aliasing after the affine warp
@@ -886,3 +1059,4 @@ class ProcessMgr():
         self.input_face_datas = []
         self.target_face_datas = []
         self.last_swapped_frame = None
+        self.face_temporal_cache = {}

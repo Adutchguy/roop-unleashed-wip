@@ -39,6 +39,10 @@ ui_mouth_top_scale = None
 ui_mouth_bottom_scale = None
 ui_mouth_left_scale = None
 ui_mouth_right_scale = None
+# Occluder artifact restoration controls
+ui_chk_restore_occluders = None
+ui_occluder_blend = None
+ui_temporal_threshold = None
 
 
 

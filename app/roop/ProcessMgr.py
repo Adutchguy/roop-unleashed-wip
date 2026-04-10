@@ -402,9 +402,6 @@ class ProcessMgr():
 
     def swap_faces(self, frame, temp_frame):
         num_faces_found = 0
-        # Collect the affine matrix of the first successfully processed face.
-        # Used for face-tracking mask warping (see _warp_mask_to_frame).
-        swapped_matrices = []
 
         if self.options.swap_mode == "first":
             face = get_first_face(frame)
@@ -412,8 +409,6 @@ class ProcessMgr():
                 return num_faces_found, frame
             num_faces_found += 1
             temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
-            if hasattr(face, 'matrix') and face.matrix is not None:
-                swapped_matrices.append(face.matrix)
             del face
 
         else:
@@ -425,16 +420,12 @@ class ProcessMgr():
                 for face in faces:
                     num_faces_found += 1
                     temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
-                    if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
-                        swapped_matrices.append(face.matrix)
 
             elif self.options.swap_mode == "all_input":
                 for i, face in enumerate(faces):
                     num_faces_found += 1
                     if i < len(self.input_face_datas):
                         temp_frame = self.process_face(i, face, temp_frame)
-                        if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
-                            swapped_matrices.append(face.matrix)
                     else:
                         break
 
@@ -450,8 +441,6 @@ class ProcessMgr():
                                 else:
                                     temp_frame = self.process_face(i, face, temp_frame)
                                 num_faces_found += 1
-                                if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
-                                    swapped_matrices.append(face.matrix)
                             if not roop.globals.vr_mode and num_faces_found == num_targetfaces:
                                 break
 
@@ -461,8 +450,6 @@ class ProcessMgr():
                     if face.sex == gender:
                         num_faces_found += 1
                         temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
-                        if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
-                            swapped_matrices.append(face.matrix)
 
             for face in faces:
                 del face
@@ -475,37 +462,24 @@ class ProcessMgr():
             return num_faces_found, frame
 
         # ── Apply manual include / exclude masks ────────────────────────────
-        # exclude mask (red paint):  mask=1 → keep original pixel
-        # include mask (green paint): mask=0 → show swap (overrides exclude)
-        # Combined: start with 0 everywhere (show swap), add exclude, then
-        # subtract include so painted-green areas always show the swap.
-        #
-        # When ref_kps were stored in the mask JSON (face-tracking mode), warp
-        # both masks to follow the face in this frame before compositing.
-        if self.include_mask is not None or self.exclude_mask is not None:
+        # When ref_kps are present the mask was already applied in canonical
+        # face-crop space inside process_face (perfect tracking for any head
+        # motion or rotation).  We only fall back to the static full-frame blend
+        # for old masks saved before the tracking feature was added (no ref_kps).
+        if (self.include_mask is not None or self.exclude_mask is not None) and self.mask_ref_kps is None:
             h, w = frame.shape[:2]
-
-            if self.mask_ref_kps is not None and swapped_matrices:
-                cur_M = swapped_matrices[0]
-                exc_mask = self._warp_mask_to_frame(self.exclude_mask, cur_M, w, h)
-                inc_mask = self._warp_mask_to_frame(self.include_mask, cur_M, w, h)
-            else:
-                exc_mask = self.exclude_mask
-                inc_mask = self.include_mask
-
             combined = np.zeros((h, w), dtype=np.float32)
 
-            if exc_mask is not None:
-                exc = exc_mask
+            if self.exclude_mask is not None:
+                exc = self.exclude_mask
                 if exc.shape[:2] != (h, w):
                     exc = cv2.resize(exc, (w, h), interpolation=cv2.INTER_LINEAR)
                 combined = np.maximum(combined, exc)
 
-            if inc_mask is not None:
-                inc = inc_mask
+            if self.include_mask is not None:
+                inc = self.include_mask
                 if inc.shape[:2] != (h, w):
                     inc = cv2.resize(inc, (w, h), interpolation=cv2.INTER_LINEAR)
-                # Include overrides exclude: force swap (mask → 0) where painted green
                 combined = combined * (1.0 - inc)
 
             temp_frame = self.simple_blend_with_mask(temp_frame, frame, combined)
@@ -616,6 +590,69 @@ class ProcessMgr():
             else:
                 enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
 
+        # ── Apply manual mask in canonical face-crop space ────────────────────
+        # Warping the reference mask into canonical space (using M_ref, the forward
+        # transform that estimate_norm produced for the reference frame) gives perfect
+        # tracking through any head motion or rotation.  The canonical crop is always
+        # face-aligned by construction, so the mask stays anchored to the face features
+        # regardless of where or how the face is positioned in the full frame.
+        #
+        # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]
+        # combined=0 → keep swapped pixels  (fake_frame)    [include / green paint, or untouched]
+        if (self.include_mask is not None or self.exclude_mask is not None) and self.mask_ref_kps is not None:
+            try:
+                from roop.face_util import estimate_norm
+                fh, fw = frame.shape[:2]
+                M_ref = estimate_norm(self.mask_ref_kps, subsample_size)
+
+                def _to_canonical(mask):
+                    if mask is None:
+                        return None
+                    mh, mw = mask.shape[:2]
+                    # 1. Upscale to full-frame so pixel coords match the KPS space
+                    m8 = (
+                        cv2.resize((mask * 255.0).clip(0, 255).astype(np.uint8),
+                                   (fw, fh), interpolation=cv2.INTER_LINEAR)
+                        if (mh, mw) != (fh, fw)
+                        else (mask * 255.0).clip(0, 255).astype(np.uint8)
+                    )
+                    # 2. Forward-warp into canonical space via M_ref.
+                    #    warpAffine(src, M_fwd, dsize) samples src at M_fwd^{-1}(p) for
+                    #    each output pixel p, so each canonical pixel is filled from the
+                    #    corresponding reference-frame position.
+                    c = cv2.warpAffine(m8, M_ref, (subsample_size, subsample_size),
+                                       flags=cv2.INTER_LINEAR,
+                                       borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    return c.astype(np.float32) / 255.0
+
+                exc_can = _to_canonical(self.exclude_mask)
+                inc_can = _to_canonical(self.include_mask)
+
+                combined_can = np.zeros((subsample_size, subsample_size), dtype=np.float32)
+                if exc_can is not None:
+                    combined_can = np.maximum(combined_can, exc_can)
+                if inc_can is not None:
+                    # Include overrides exclude: force swap (combined → 0) in green regions
+                    combined_can = combined_can * (1.0 - inc_can)
+
+                if np.any(combined_can > 0):
+                    c3 = combined_can[:, :, np.newaxis]
+                    fake_frame = (fake_frame.astype(np.float32) * (1.0 - c3) +
+                                  aligned_img.astype(np.float32) * c3).astype(np.uint8)
+                    if enhanced_frame is not None:
+                        eh, ew = enhanced_frame.shape[:2]
+                        if (eh, ew) != (subsample_size, subsample_size):
+                            c3e = cv2.resize(combined_can, (ew, eh),
+                                             interpolation=cv2.INTER_LINEAR)[:, :, np.newaxis]
+                            orig_enh = cv2.resize(aligned_img, (ew, eh),
+                                                  interpolation=cv2.INTER_CUBIC)
+                        else:
+                            c3e, orig_enh = c3, aligned_img
+                        enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
+                                          orig_enh.astype(np.float32) * c3e).astype(np.uint8)
+            except Exception as e:
+                print(f"[ProcessMgr] Canonical mask application failed: {e}")
+
         upscale = 512
         orig_width = fake_frame.shape[1]
         if orig_width != upscale:
@@ -662,60 +699,6 @@ class ProcessMgr():
         start_x, end_x, start_y, end_y = clamp_cut_values(start_x, end_x, start_y, end_y, dest)
         dest[start_y:end_y, start_x:end_x] = src
         return dest
-
-    def _warp_mask_to_frame(self, mask, cur_matrix, frame_w, frame_h):
-        """Warp a reference-frame mask to current-frame space using face affine tracking.
-
-        Both matrices map full-frame pixel coords → canonical face-crop space (subsample_size²).
-        For each destination pixel p_cur in the current frame, we look up the source mask
-        at:  p_ref = inv(M_ref) * M_cur * p_cur
-        which keeps the mask anchored to the face even when it moves, rotates, or scales.
-
-        The mask is first upscaled to full-frame resolution (same as existing resize logic)
-        so that its coordinates align with the full-frame keypoint space before warping.
-
-        Falls back to the original (unwarped) mask on any error.
-        """
-        if mask is None or cur_matrix is None or self.mask_ref_kps is None:
-            return mask
-        try:
-            from roop.face_util import estimate_norm
-
-            # 1. Scale mask to full processing-frame size so pixel coords match the KPS space.
-            mh, mw = mask.shape[:2]
-            if (mh, mw) != (frame_h, frame_w):
-                mask_u8 = cv2.resize(
-                    (mask * 255.0).clip(0, 255).astype(np.uint8),
-                    (frame_w, frame_h),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-            else:
-                mask_u8 = (mask * 255.0).clip(0, 255).astype(np.uint8)
-
-            # 2. Compute M_ref (same subsample_size used by process_face for M_cur).
-            subsample_size = self.options.subsample_size if self.options.subsample_size else 512
-            M_ref = estimate_norm(self.mask_ref_kps, subsample_size)
-
-            # 3. Build the combined 2×3 forward warp: reference-frame → current-frame.
-            #    cv2.warpAffine(src, T_fwd, dsize) samples src at T_fwd^{-1}(p) for each
-            #    output pixel p, so passing T_fwd = inv(M_cur) @ M_ref yields the backward
-            #    map T_fwd^{-1} = inv(M_ref) @ M_cur, which correctly maps each current-frame
-            #    pixel through canonical space to the corresponding reference-frame position.
-            M_ref_3x3 = np.vstack([M_ref,       [0.0, 0.0, 1.0]])
-            M_cur_3x3 = np.vstack([cur_matrix,  [0.0, 0.0, 1.0]])
-            T_3x3 = np.linalg.inv(M_cur_3x3) @ M_ref_3x3
-            T_2x3 = T_3x3[:2, :]
-
-            warped = cv2.warpAffine(
-                mask_u8, T_2x3, (frame_w, frame_h),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=0,
-            )
-            return warped.astype(np.float32) / 255.0
-        except Exception as e:
-            print(f"[ProcessMgr] Mask tracking warp failed: {e}")
-            return mask
 
     def simple_blend_with_mask(self, image1, image2, mask):
         # mask may be 2-D (H×W) or 3-D (H×W×3); normalise to H×W×1 so it

@@ -514,7 +514,7 @@ def get_ref_face_kps_for_mask(frame_num, files):
     JSON string.  These KPS are stored in the saved mask JSON so ProcessMgr can warp the
     mask to follow the face across frames (face-tracking mask)."""
     import json as _json
-    from roop.face_analyser import get_first_face
+    from roop.face_util import get_first_face
 
     if files is None or selected_preview_index >= len(files) or frame_num is None:
         return ""

@@ -135,9 +135,6 @@ def faceswap_tab():
                             value=roop.globals.CFG.mask_clip_text,
                             interactive=roop.globals.CFG.mask_engine == "Clip2Seg",
                         )
-                        bt_preview_mask = gr.Button(
-                            "👥 Show Mask Preview", variant="secondary"
-                        )
 
             with gr.Column(scale=2):
                 previewimage = gr.Image(label="Preview Image", height=576, interactive=False, visible=True, format=get_gradio_output_format(), elem_id="roop_preview_image")
@@ -146,6 +143,9 @@ def faceswap_tab():
                 # visible=False would remove it from the DOM entirely (Svelte {#if} block), making it
                 # unfindable by JS and excluded from Gradio's input payload — which was our bug.
                 mask_json_store = gr.Textbox(value="", visible="hidden", elem_id="mask_json_store", label="Mask Data")
+                # mask_kps_store: holds the 5-point face keypoints (JSON) of the reference frame
+                # where the mask was painted; embedded in the mask JSON for per-frame tracking.
+                mask_kps_store = gr.Textbox(value="", visible="hidden", elem_id="mask_kps_store", label="Mask KPS")
                 # original_frame_img: stores the unswapped source frame so the masking editor
                 # always shows the original image, not the face-swapped result.
                 # visible="hidden" keeps it in the DOM (needed by JS) but takes no visual space.
@@ -273,7 +273,6 @@ def faceswap_tab():
     )
     bt_clear_input_faces.click(fn=on_clear_input_faces, outputs=[input_faces])
 
-    bt_preview_mask.click(fn=on_preview_mask, inputs=[preview_frame_num, bt_destfiles, clip_text, selected_mask_engine], outputs=[previewimage]) 
 
     start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
@@ -286,7 +285,12 @@ def faceswap_tab():
     bt_refresh_preview.click(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     # Pure client-side toggle — no Python round-trip needed.
     # maskToggle() is defined in MASKING_HEAD_JS injected via Blocks(head=) in main.py.
-    bt_toggle_masking.click(fn=None, js="() => maskToggle()")
+    bt_toggle_masking.click(
+        fn=get_ref_face_kps_for_mask,
+        inputs=[preview_frame_num, bt_destfiles],
+        outputs=[mask_kps_store],
+        show_progress='hidden'
+    ).then(fn=None, js="() => maskToggle()")
     fake_preview.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     preview_frame_num.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden', )
     bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[target_faces, selected_face_detection])
@@ -505,6 +509,30 @@ def on_use_face_from_selected(files, frame_num):
     return ui.globals.ui_target_thumbs, gr.Dropdown(value='Selected face')
 
 
+def get_ref_face_kps_for_mask(frame_num, files):
+    """Detect the first face in the current preview frame and return its 5 keypoints as a
+    JSON string.  These KPS are stored in the saved mask JSON so ProcessMgr can warp the
+    mask to follow the face across frames (face-tracking mask)."""
+    import json as _json
+    from roop.face_analyser import get_first_face
+
+    if files is None or selected_preview_index >= len(files) or frame_num is None:
+        return ""
+    filename = files[selected_preview_index].name
+    if util.is_video(filename) or filename.lower().endswith('gif'):
+        current_frame = get_video_frame(filename, frame_num)
+    else:
+        current_frame = get_image_frame(filename)
+    if current_frame is None:
+        return ""
+
+    face = get_first_face(current_frame)
+    if face is None or not hasattr(face, 'kps') or face.kps is None:
+        return ""
+
+    return _json.dumps(face.kps.tolist())
+
+
 def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection, face_distance, blend_ratio,
                               selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
                               restore_occluders=False, occluder_blend=0.8, temporal_threshold=30.0):
@@ -607,6 +635,7 @@ MASKING_HEAD_JS = """
   var _panning = false, _panSX = 0, _panSY = 0, _panOX = 0, _panOY = 0;
   var _bgImage = null, _swappedImage = null, _prevRafPending = false;
   var _pendingMaskJson = null;   /* mask JSON waiting to be restored once canvases are sized */
+  var _currentKps = null;        /* face keypoints from the reference frame (for mask tracking) */
 
   /* ── Public: called by the Gradio button click (fn=None, js="...") ── */
   window.maskToggle = function() {
@@ -662,6 +691,22 @@ MASKING_HEAD_JS = """
 
     var storeEl = document.querySelector('#mask_json_store textarea, #mask_json_store input');
     var existJson = storeEl ? storeEl.value : '';
+
+    /* Resolve face keypoints for mask tracking:
+       1. Prefer ref_kps already embedded in the saved mask JSON (persists across edit sessions).
+       2. Fall back to the freshly-fetched mask_kps_store (set by Python when Edit Mask was clicked). */
+    _currentKps = null;
+    if (existJson) {
+      try {
+        var _ed = JSON.parse(existJson);
+        if (_ed.ref_kps) _currentKps = _ed.ref_kps;
+      } catch(e) {}
+    }
+    if (!_currentKps) {
+      var kpsEl = document.querySelector('#mask_kps_store textarea, #mask_kps_store input');
+      var kpsVal = kpsEl ? kpsEl.value : '';
+      if (kpsVal) { try { _currentKps = JSON.parse(kpsVal); } catch(e) {} }
+    }
 
     /* Build modal DOM ─────────────────────────────────────────────── */
     var modal = document.createElement('div');
@@ -1150,6 +1195,8 @@ MASKING_HEAD_JS = """
     var result = {};
     if (!_isBlank(excC)) result.exclude = _toGray(excC);
     if (!_isBlank(incC)) result.include = _toGray(incC);
+    /* Embed face keypoints so ProcessMgr can warp the mask to track the face each frame */
+    if (_currentKps) result.ref_kps = _currentKps;
     _writeToStore(JSON.stringify(result));
     _closeModal(false);
     setTimeout(function() {
@@ -1204,33 +1251,6 @@ def on_set_frame(sender:str, frame_num):
     
     return gen_processing_text(list_files_process[idx].startframe,list_files_process[idx].endframe)
 
-
-def on_preview_mask(frame_num, files, clip_text, mask_engine):
-    from roop.core import live_swap, get_processing_plugins
-    global is_processing
-
-    if is_processing or files is None or selected_preview_index >= len(files) or clip_text is None or frame_num is None:
-        return None
-        
-    filename = files[selected_preview_index].name
-    if util.is_video(filename) or filename.lower().endswith('gif'):
-        current_frame = get_video_frame(filename, frame_num
-                                        )
-    else:
-        current_frame = get_image_frame(filename)
-    if current_frame is None or mask_engine is None:
-        return None
-    if mask_engine == "Clip2Seg":
-        mask_engine = "mask_clip2seg"
-        if clip_text is None or len(clip_text) < 1:
-          mask_engine = None
-    elif mask_engine == "DFL XSeg":
-        mask_engine = "mask_xseg"
-    options = ProcessOptions(get_processing_plugins(mask_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
-                              "all", 0, clip_text, None, 0, 128, False, False, True)
-
-    current_frame = live_swap(current_frame, options)
-    return util.convert_to_gradio(current_frame)
 
 
 def on_clear_input_faces():

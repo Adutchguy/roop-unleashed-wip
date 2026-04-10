@@ -142,6 +142,7 @@ class ProcessMgr():
         # exclude mask → float32 H×W, 1.0 = keep original in this pixel
         self.include_mask = None
         self.exclude_mask = None
+        self.mask_ref_kps = None
         mask_src = self.options.imagemask
         if isinstance(mask_src, str) and mask_src.strip().startswith('{'):
             try:
@@ -167,10 +168,21 @@ class ProcessMgr():
 
                 self.include_mask = _decode_mask(mask_data.get('include'))
                 self.exclude_mask = _decode_mask(mask_data.get('exclude'))
+
+                # Face-tracking: load 5-point reference keypoints if present.
+                # These were embedded by the JS mask editor when the mask was saved.
+                self.mask_ref_kps = None
+                ref_kps = mask_data.get('ref_kps')
+                if ref_kps:
+                    try:
+                        self.mask_ref_kps = np.array(ref_kps, dtype=np.float32)  # shape (5, 2)
+                    except Exception:
+                        self.mask_ref_kps = None
             except Exception as e:
                 print(f"[ProcessMgr] Failed to parse mask JSON: {e}")
                 self.include_mask = None
                 self.exclude_mask = None
+                self.mask_ref_kps = None
         # Clear legacy imagemask — we only use include_mask / exclude_mask now
         self.options.imagemask = None
 
@@ -390,6 +402,9 @@ class ProcessMgr():
 
     def swap_faces(self, frame, temp_frame):
         num_faces_found = 0
+        # Collect the affine matrix of the first successfully processed face.
+        # Used for face-tracking mask warping (see _warp_mask_to_frame).
+        swapped_matrices = []
 
         if self.options.swap_mode == "first":
             face = get_first_face(frame)
@@ -397,26 +412,32 @@ class ProcessMgr():
                 return num_faces_found, frame
             num_faces_found += 1
             temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
+            if hasattr(face, 'matrix') and face.matrix is not None:
+                swapped_matrices.append(face.matrix)
             del face
 
         else:
             faces = get_all_faces(frame)
             if faces is None:
                 return num_faces_found, frame
-            
+
             if self.options.swap_mode == "all":
                 for face in faces:
                     num_faces_found += 1
                     temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
+                    if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
+                        swapped_matrices.append(face.matrix)
 
             elif self.options.swap_mode == "all_input":
                 for i, face in enumerate(faces):
                     num_faces_found += 1
                     if i < len(self.input_face_datas):
                         temp_frame = self.process_face(i, face, temp_frame)
+                        if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
+                            swapped_matrices.append(face.matrix)
                     else:
                         break
-            
+
             elif self.options.swap_mode == "selected":
                 num_targetfaces = len(self.target_face_datas)
                 use_index = num_targetfaces == 1
@@ -429,6 +450,8 @@ class ProcessMgr():
                                 else:
                                     temp_frame = self.process_face(i, face, temp_frame)
                                 num_faces_found += 1
+                                if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
+                                    swapped_matrices.append(face.matrix)
                             if not roop.globals.vr_mode and num_faces_found == num_targetfaces:
                                 break
 
@@ -438,7 +461,9 @@ class ProcessMgr():
                     if face.sex == gender:
                         num_faces_found += 1
                         temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
-            
+                        if not swapped_matrices and hasattr(face, 'matrix') and face.matrix is not None:
+                            swapped_matrices.append(face.matrix)
+
             for face in faces:
                 del face
             faces.clear()
@@ -454,18 +479,30 @@ class ProcessMgr():
         # include mask (green paint): mask=0 → show swap (overrides exclude)
         # Combined: start with 0 everywhere (show swap), add exclude, then
         # subtract include so painted-green areas always show the swap.
+        #
+        # When ref_kps were stored in the mask JSON (face-tracking mode), warp
+        # both masks to follow the face in this frame before compositing.
         if self.include_mask is not None or self.exclude_mask is not None:
             h, w = frame.shape[:2]
+
+            if self.mask_ref_kps is not None and swapped_matrices:
+                cur_M = swapped_matrices[0]
+                exc_mask = self._warp_mask_to_frame(self.exclude_mask, cur_M, w, h)
+                inc_mask = self._warp_mask_to_frame(self.include_mask, cur_M, w, h)
+            else:
+                exc_mask = self.exclude_mask
+                inc_mask = self.include_mask
+
             combined = np.zeros((h, w), dtype=np.float32)
 
-            if self.exclude_mask is not None:
-                exc = self.exclude_mask
+            if exc_mask is not None:
+                exc = exc_mask
                 if exc.shape[:2] != (h, w):
                     exc = cv2.resize(exc, (w, h), interpolation=cv2.INTER_LINEAR)
                 combined = np.maximum(combined, exc)
 
-            if self.include_mask is not None:
-                inc = self.include_mask
+            if inc_mask is not None:
+                inc = inc_mask
                 if inc.shape[:2] != (h, w):
                     inc = cv2.resize(inc, (w, h), interpolation=cv2.INTER_LINEAR)
                 # Include overrides exclude: force swap (mask → 0) where painted green
@@ -625,6 +662,57 @@ class ProcessMgr():
         start_x, end_x, start_y, end_y = clamp_cut_values(start_x, end_x, start_y, end_y, dest)
         dest[start_y:end_y, start_x:end_x] = src
         return dest
+
+    def _warp_mask_to_frame(self, mask, cur_matrix, frame_w, frame_h):
+        """Warp a reference-frame mask to current-frame space using face affine tracking.
+
+        Both matrices map full-frame pixel coords → canonical face-crop space (subsample_size²).
+        For each destination pixel p_cur in the current frame, we look up the source mask
+        at:  p_ref = inv(M_ref) * M_cur * p_cur
+        which keeps the mask anchored to the face even when it moves, rotates, or scales.
+
+        The mask is first upscaled to full-frame resolution (same as existing resize logic)
+        so that its coordinates align with the full-frame keypoint space before warping.
+
+        Falls back to the original (unwarped) mask on any error.
+        """
+        if mask is None or cur_matrix is None or self.mask_ref_kps is None:
+            return mask
+        try:
+            from roop.face_util import estimate_norm
+
+            # 1. Scale mask to full processing-frame size so pixel coords match the KPS space.
+            mh, mw = mask.shape[:2]
+            if (mh, mw) != (frame_h, frame_w):
+                mask_u8 = cv2.resize(
+                    (mask * 255.0).clip(0, 255).astype(np.uint8),
+                    (frame_w, frame_h),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+            else:
+                mask_u8 = (mask * 255.0).clip(0, 255).astype(np.uint8)
+
+            # 2. Compute M_ref (same subsample_size used by process_face for M_cur).
+            subsample_size = self.options.subsample_size if self.options.subsample_size else 512
+            M_ref = estimate_norm(self.mask_ref_kps, subsample_size)
+
+            # 3. Build the combined 2×3 warp: current-frame pixel → reference-frame pixel.
+            #    cv2.warpAffine uses inverse mapping: dst(p) = src(M·p).
+            M_ref_3x3 = np.vstack([M_ref,       [0.0, 0.0, 1.0]])
+            M_cur_3x3 = np.vstack([cur_matrix,  [0.0, 0.0, 1.0]])
+            T_3x3 = np.linalg.inv(M_ref_3x3) @ M_cur_3x3
+            T_2x3 = T_3x3[:2, :]
+
+            warped = cv2.warpAffine(
+                mask_u8, T_2x3, (frame_w, frame_h),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            return warped.astype(np.float32) / 255.0
+        except Exception as e:
+            print(f"[ProcessMgr] Mask tracking warp failed: {e}")
+            return mask
 
     def simple_blend_with_mask(self, image1, image2, mask):
         # mask may be 2-D (H×W) or 3-D (H×W×3); normalise to H×W×1 so it

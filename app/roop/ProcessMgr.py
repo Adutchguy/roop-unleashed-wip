@@ -143,6 +143,7 @@ class ProcessMgr():
         self.include_mask = None
         self.exclude_mask = None
         self.mask_ref_kps = None
+        self.mask_is_canonical = False
         mask_src = self.options.imagemask
         if isinstance(mask_src, str) and mask_src.strip().startswith('{'):
             try:
@@ -178,11 +179,15 @@ class ProcessMgr():
                         self.mask_ref_kps = np.array(ref_kps, dtype=np.float32)  # shape (5, 2)
                     except Exception:
                         self.mask_ref_kps = None
+                # Canonical masks were painted directly in face-crop space by the updated editor.
+                # No warp is needed — just resize to subsample_size at apply time.
+                self.mask_is_canonical = bool(mask_data.get('canonical', False))
             except Exception as e:
                 print(f"[ProcessMgr] Failed to parse mask JSON: {e}")
                 self.include_mask = None
                 self.exclude_mask = None
                 self.mask_ref_kps = None
+                self.mask_is_canonical = False
         # Clear legacy imagemask — we only use include_mask / exclude_mask now
         self.options.imagemask = None
 
@@ -462,11 +467,11 @@ class ProcessMgr():
             return num_faces_found, frame
 
         # ── Apply manual include / exclude masks ────────────────────────────
-        # When ref_kps are present the mask was already applied in canonical
-        # face-crop space inside process_face (perfect tracking for any head
-        # motion or rotation).  We only fall back to the static full-frame blend
-        # for old masks saved before the tracking feature was added (no ref_kps).
-        if (self.include_mask is not None or self.exclude_mask is not None) and self.mask_ref_kps is None:
+        # Canonical masks (mask_is_canonical=True) and ref_kps warp masks are
+        # both applied inside process_face in canonical face-crop space.
+        # This fallback static full-frame blend only runs for genuinely legacy
+        # masks (no ref_kps, not canonical) saved before tracking was added.
+        if (self.include_mask is not None or self.exclude_mask is not None) and self.mask_ref_kps is None and not self.mask_is_canonical:
             h, w = frame.shape[:2]
             combined = np.zeros((h, w), dtype=np.float32)
 
@@ -537,6 +542,12 @@ class ProcessMgr():
     def process_face(self, face_index, target_face:Face, frame:Frame):
         from roop.face_util import align_crop
 
+        # Capture full-frame dimensions before any rotation rebind.
+        # 'frame' may be reassigned to a smaller rotcutframe below when
+        # autorotate_faces is active.  mask_ref_kps are always in the
+        # original full-frame coordinate space, so the warp path needs these.
+        orig_fh, orig_fw = frame.shape[:2]
+
         enhanced_frame = None
         if len(self.input_face_datas) > 0:
             inputface = self.input_face_datas[face_index].faces[0]
@@ -591,67 +602,106 @@ class ProcessMgr():
                 enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
 
         # ── Apply manual mask in canonical face-crop space ────────────────────
-        # Warping the reference mask into canonical space (using M_ref, the forward
-        # transform that estimate_norm produced for the reference frame) gives perfect
-        # tracking through any head motion or rotation.  The canonical crop is always
-        # face-aligned by construction, so the mask stays anchored to the face features
-        # regardless of where or how the face is positioned in the full frame.
-        #
         # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]
-        # combined=0 → keep swapped pixels  (fake_frame)    [include / green paint, or untouched]
-        if (self.include_mask is not None or self.exclude_mask is not None) and self.mask_ref_kps is not None:
-            try:
-                from roop.face_util import estimate_norm
-                fh, fw = frame.shape[:2]
-                M_ref = estimate_norm(self.mask_ref_kps, subsample_size)
+        # combined=0 → keep swapped pixels  (fake_frame)    [include / green paint]
+        #
+        # Two modes:
+        #   canonical=True  — mask was painted directly on the face crop; just
+        #                     resize to subsample_size and apply.  Perfect tracking
+        #                     by construction; no warp needed.
+        #   mask_ref_kps    — legacy mask in full-frame coords; warp via M_ref.
+        #                     Uses orig_fh/orig_fw (captured before any rotation
+        #                     rebind) so autorotate_faces doesn't corrupt the dims.
+        if self.include_mask is not None or self.exclude_mask is not None:
+            if self.mask_is_canonical:
+                try:
+                    def _resize_to_ss(mask):
+                        if mask is None:
+                            return None
+                        mh, mw = mask.shape[:2]
+                        if (mh, mw) == (subsample_size, subsample_size):
+                            return mask
+                        m8 = cv2.resize((mask * 255.0).clip(0, 255).astype(np.uint8),
+                                        (subsample_size, subsample_size),
+                                        interpolation=cv2.INTER_LINEAR)
+                        return m8.astype(np.float32) / 255.0
 
-                def _to_canonical(mask):
-                    if mask is None:
-                        return None
-                    mh, mw = mask.shape[:2]
-                    # 1. Upscale to full-frame so pixel coords match the KPS space
-                    m8 = (
-                        cv2.resize((mask * 255.0).clip(0, 255).astype(np.uint8),
-                                   (fw, fh), interpolation=cv2.INTER_LINEAR)
-                        if (mh, mw) != (fh, fw)
-                        else (mask * 255.0).clip(0, 255).astype(np.uint8)
-                    )
-                    # 2. Forward-warp into canonical space via M_ref.
-                    #    warpAffine(src, M_fwd, dsize) samples src at M_fwd^{-1}(p) for
-                    #    each output pixel p, so each canonical pixel is filled from the
-                    #    corresponding reference-frame position.
-                    c = cv2.warpAffine(m8, M_ref, (subsample_size, subsample_size),
-                                       flags=cv2.INTER_LINEAR,
-                                       borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                    return c.astype(np.float32) / 255.0
+                    exc_can = _resize_to_ss(self.exclude_mask)
+                    inc_can = _resize_to_ss(self.include_mask)
 
-                exc_can = _to_canonical(self.exclude_mask)
-                inc_can = _to_canonical(self.include_mask)
+                    combined_can = np.zeros((subsample_size, subsample_size), dtype=np.float32)
+                    if exc_can is not None:
+                        combined_can = np.maximum(combined_can, exc_can)
+                    if inc_can is not None:
+                        combined_can = combined_can * (1.0 - inc_can)
 
-                combined_can = np.zeros((subsample_size, subsample_size), dtype=np.float32)
-                if exc_can is not None:
-                    combined_can = np.maximum(combined_can, exc_can)
-                if inc_can is not None:
-                    # Include overrides exclude: force swap (combined → 0) in green regions
-                    combined_can = combined_can * (1.0 - inc_can)
+                    if np.any(combined_can > 0):
+                        c3 = combined_can[:, :, np.newaxis]
+                        fake_frame = (fake_frame.astype(np.float32) * (1.0 - c3) +
+                                      aligned_img.astype(np.float32) * c3).astype(np.uint8)
+                        if enhanced_frame is not None:
+                            eh, ew = enhanced_frame.shape[:2]
+                            if (eh, ew) != (subsample_size, subsample_size):
+                                c3e = cv2.resize(combined_can, (ew, eh),
+                                                 interpolation=cv2.INTER_LINEAR)[:, :, np.newaxis]
+                                orig_enh = cv2.resize(aligned_img, (ew, eh),
+                                                      interpolation=cv2.INTER_CUBIC)
+                            else:
+                                c3e, orig_enh = c3, aligned_img
+                            enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
+                                              orig_enh.astype(np.float32) * c3e).astype(np.uint8)
+                except Exception as e:
+                    print(f"[ProcessMgr] Canonical mask application failed: {e}")
 
-                if np.any(combined_can > 0):
-                    c3 = combined_can[:, :, np.newaxis]
-                    fake_frame = (fake_frame.astype(np.float32) * (1.0 - c3) +
-                                  aligned_img.astype(np.float32) * c3).astype(np.uint8)
-                    if enhanced_frame is not None:
-                        eh, ew = enhanced_frame.shape[:2]
-                        if (eh, ew) != (subsample_size, subsample_size):
-                            c3e = cv2.resize(combined_can, (ew, eh),
-                                             interpolation=cv2.INTER_LINEAR)[:, :, np.newaxis]
-                            orig_enh = cv2.resize(aligned_img, (ew, eh),
-                                                  interpolation=cv2.INTER_CUBIC)
-                        else:
-                            c3e, orig_enh = c3, aligned_img
-                        enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
-                                          orig_enh.astype(np.float32) * c3e).astype(np.uint8)
-            except Exception as e:
-                print(f"[ProcessMgr] Canonical mask application failed: {e}")
+            elif self.mask_ref_kps is not None:
+                try:
+                    from roop.face_util import estimate_norm
+                    # Use original (pre-rotation-rebind) frame dimensions so that
+                    # mask_ref_kps — which are always in full-frame coords — map correctly.
+                    fh, fw = orig_fh, orig_fw
+                    M_ref = estimate_norm(self.mask_ref_kps, subsample_size)
+
+                    def _to_canonical(mask):
+                        if mask is None:
+                            return None
+                        mh, mw = mask.shape[:2]
+                        m8 = (
+                            cv2.resize((mask * 255.0).clip(0, 255).astype(np.uint8),
+                                       (fw, fh), interpolation=cv2.INTER_LINEAR)
+                            if (mh, mw) != (fh, fw)
+                            else (mask * 255.0).clip(0, 255).astype(np.uint8)
+                        )
+                        c = cv2.warpAffine(m8, M_ref, (subsample_size, subsample_size),
+                                           flags=cv2.INTER_LINEAR,
+                                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                        return c.astype(np.float32) / 255.0
+
+                    exc_can = _to_canonical(self.exclude_mask)
+                    inc_can = _to_canonical(self.include_mask)
+
+                    combined_can = np.zeros((subsample_size, subsample_size), dtype=np.float32)
+                    if exc_can is not None:
+                        combined_can = np.maximum(combined_can, exc_can)
+                    if inc_can is not None:
+                        combined_can = combined_can * (1.0 - inc_can)
+
+                    if np.any(combined_can > 0):
+                        c3 = combined_can[:, :, np.newaxis]
+                        fake_frame = (fake_frame.astype(np.float32) * (1.0 - c3) +
+                                      aligned_img.astype(np.float32) * c3).astype(np.uint8)
+                        if enhanced_frame is not None:
+                            eh, ew = enhanced_frame.shape[:2]
+                            if (eh, ew) != (subsample_size, subsample_size):
+                                c3e = cv2.resize(combined_can, (ew, eh),
+                                                 interpolation=cv2.INTER_LINEAR)[:, :, np.newaxis]
+                                orig_enh = cv2.resize(aligned_img, (ew, eh),
+                                                      interpolation=cv2.INTER_CUBIC)
+                            else:
+                                c3e, orig_enh = c3, aligned_img
+                            enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
+                                              orig_enh.astype(np.float32) * c3e).astype(np.uint8)
+                except Exception as e:
+                    print(f"[ProcessMgr] Warp-based mask application failed: {e}")
 
         upscale = 512
         orig_width = fake_frame.shape[1]

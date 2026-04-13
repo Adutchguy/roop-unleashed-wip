@@ -31,6 +31,11 @@ swap_choices = ["First found", "All input faces", "All female", "All male", "All
 
 current_video_fps = 50
 
+# Last swapped preview frame (numpy BGR), updated by on_preview_frame_changed.
+# get_face_crop_for_mask reads this directly so previewimage never needs to be
+# passed as a Gradio event input (which caused slider-value caching bugs).
+_last_swapped_preview = None
+
 
 def faceswap_tab():
     global no_face_choices, previewimage
@@ -135,9 +140,6 @@ def faceswap_tab():
                             value=roop.globals.CFG.mask_clip_text,
                             interactive=roop.globals.CFG.mask_engine == "Clip2Seg",
                         )
-                        bt_preview_mask = gr.Button(
-                            "👥 Show Mask Preview", variant="secondary"
-                        )
 
             with gr.Column(scale=2):
                 previewimage = gr.Image(label="Preview Image", height=576, interactive=False, visible=True, format=get_gradio_output_format(), elem_id="roop_preview_image")
@@ -146,6 +148,24 @@ def faceswap_tab():
                 # visible=False would remove it from the DOM entirely (Svelte {#if} block), making it
                 # unfindable by JS and excluded from Gradio's input payload — which was our bug.
                 mask_json_store = gr.Textbox(value="", visible="hidden", elem_id="mask_json_store", label="Mask Data")
+                # mask_kps_store: holds the 5-point face keypoints (JSON) of the reference frame
+                # where the mask was painted; embedded in the mask JSON for per-frame tracking.
+                mask_kps_store = gr.Textbox(value="", visible="hidden", elem_id="mask_kps_store", label="Mask KPS")
+                # mask_face_crop_store: holds the canonical 512×512 face crop as a
+                # base64 PNG data-URL.  The mask editor reads this and uses it as the
+                # drawing-surface background, so the mask is painted in face-crop
+                # coordinate space and always tracks the face at processing time.
+                # A hidden Textbox (not gr.Image) guarantees the value is in the DOM
+                # immediately when the follow-on JS runs.
+                mask_face_crop_store = gr.Textbox(value="", visible="hidden",
+                                                  elem_id="mask_face_crop_store",
+                                                  label="Face Crop Data URL")
+                # mask_face_swap_crop_store: the swapped (post-swap) face crop as a
+                # base64 data-URL, used as the live-preview base in the mask editor.
+                # Empty when no swap preview has been generated yet.
+                mask_face_swap_crop_store = gr.Textbox(value="", visible="hidden",
+                                                       elem_id="mask_face_swap_crop_store",
+                                                       label="Swapped Face Crop Data URL")
                 # original_frame_img: stores the unswapped source frame so the masking editor
                 # always shows the original image, not the face-swapped result.
                 # visible="hidden" keeps it in the DOM (needed by JS) but takes no visual space.
@@ -273,7 +293,6 @@ def faceswap_tab():
     )
     bt_clear_input_faces.click(fn=on_clear_input_faces, outputs=[input_faces])
 
-    bt_preview_mask.click(fn=on_preview_mask, inputs=[preview_frame_num, bt_destfiles, clip_text, selected_mask_engine], outputs=[previewimage]) 
 
     start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
@@ -286,9 +305,27 @@ def faceswap_tab():
     bt_refresh_preview.click(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     # Pure client-side toggle — no Python round-trip needed.
     # maskToggle() is defined in MASKING_HEAD_JS injected via Blocks(head=) in main.py.
-    bt_toggle_masking.click(fn=None, js="() => maskToggle()")
+    bt_toggle_masking.click(
+        fn=get_face_crop_for_mask,
+        inputs=[preview_frame_num, bt_destfiles],
+        outputs=[mask_face_crop_store, mask_face_swap_crop_store],
+        show_progress='hidden'
+    ).then(fn=None, js="() => maskToggle()")
     fake_preview.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
-    preview_frame_num.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden', )
+    preview_frame_num.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+
+    # ── Settings that were previously missing auto-refresh ──────────────────
+    ui.globals.ui_selected_enhancer.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    selected_face_detection.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    max_face_distance.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    ui.globals.ui_blend_ratio.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    clip_text.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    no_face_action.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    vr_mode.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    autorotate.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    num_swap_steps.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    ui.globals.ui_upscale.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+
     bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[target_faces, selected_face_detection])
     set_frame_start.click(fn=on_set_frame, inputs=[set_frame_start, preview_frame_num], outputs=[text_frame_clip])
     set_frame_end.click(fn=on_set_frame, inputs=[set_frame_end, preview_frame_num], outputs=[text_frame_clip])
@@ -505,10 +542,104 @@ def on_use_face_from_selected(files, frame_num):
     return ui.globals.ui_target_thumbs, gr.Dropdown(value='Selected face')
 
 
+def get_face_crop_for_mask(frame_num, files):
+    """Return two base64 PNG data-URLs: (source_face_crop, swapped_face_crop).
+
+    source_face_crop — 512×512 canonical face crop that exactly matches the
+      coordinate space ProcessMgr operates in.  When autorotate_faces is active
+      and the face is horizontal the function replicates the cutout+rotate step
+      from process_face before running align_crop, so the editor background and
+      the processor canonical space are identical regardless of head angle.
+
+    swapped_face_crop — same canonical crop computed from the swap preview frame.
+      Used as the live-preview base so the user sees the swap result with mask
+      overlays.  Empty string when no swap preview is available.
+
+    Both return "" on failure so the hidden Textboxes fall back gracefully."""
+    import base64 as _b64
+    import cv2 as _cv2
+    import numpy as _np
+    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise
+    import roop.globals
+
+    def _rotation_action(face, frame):
+        """Mirror ProcessMgr.rotation_action — returns direction string or None."""
+        bbox_w = face.bbox[2] - face.bbox[0]
+        bbox_h = face.bbox[3] - face.bbox[1]
+        if bbox_w <= bbox_h:
+            return None  # upright face — no rotation needed
+        # Horizontal face: use chin/forehead landmarks to pick direction
+        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
+            forehead_x = face.landmark_2d_106[72][0]
+            chin_x     = face.landmark_2d_106[0][0]
+            if chin_x < forehead_x:
+                return "rotate_anticlockwise"
+            if forehead_x < chin_x:
+                return "rotate_clockwise"
+        # Landmark fallback: use bbox centre vs frame centre
+        fh, fw = frame.shape[:2]
+        bbox_cx = face.bbox[0] + bbox_w / 2.0
+        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
+
+    def _cutout(frame, x0, y0, x1, y1):
+        x0 = max(0, int(x0)); y0 = max(0, int(y0))
+        x1 = min(frame.shape[1], int(x1)); y1 = min(frame.shape[0], int(y1))
+        return frame[y0:y1, x0:x1]
+
+    def _encode(frame):
+        """Return a base64 PNG data-URL for the canonical face crop of *frame*,
+        applying the same autorotation pre-processing that process_face uses."""
+        if frame is None:
+            return ""
+        face = get_first_face(frame)
+        if face is None or not hasattr(face, 'kps') or face.kps is None:
+            return ""
+
+        # Replicate the autorotate cutout+rotate that process_face does so that
+        # the canonical crop shown in the editor matches what the processor sees.
+        if roop.globals.autorotate_faces:
+            action = _rotation_action(face, frame)
+            if action is not None:
+                x0, y0, x1, y1 = face.bbox.astype(int)
+                offs = int(max(x1 - x0, y1 - y0) * 0.25)
+                cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
+                if action == "rotate_anticlockwise":
+                    cut = rotate_anticlockwise(cut)
+                else:
+                    cut = rotate_clockwise(cut)
+                rotface = get_first_face(cut)
+                if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
+                    face  = rotface
+                    frame = cut
+
+        crop, _ = align_crop(frame, face.kps, 512)
+        ok, buf = _cv2.imencode('.png', crop)
+        if not ok:
+            return ""
+        return "data:image/png;base64," + _b64.b64encode(buf.tobytes()).decode('utf-8')
+
+    # --- Source face crop ---
+    if files is None or selected_preview_index >= len(files) or frame_num is None:
+        return "", ""
+    filename = files[selected_preview_index].name
+    if util.is_video(filename) or filename.lower().endswith('gif'):
+        current_frame = get_video_frame(filename, frame_num)
+    else:
+        current_frame = get_image_frame(filename)
+    src_url = _encode(current_frame)
+
+    # --- Swapped face crop (from the last generated swap preview, if any) ---
+    # _last_swapped_preview is set by on_preview_frame_changed when fake_preview
+    # is active; it holds the BGR numpy frame without going through Gradio inputs.
+    swp_url = _encode(_last_swapped_preview) if _last_swapped_preview is not None else ""
+
+    return src_url, swp_url
+
+
 def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection, face_distance, blend_ratio,
                               selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
                               restore_occluders=False, occluder_blend=0.8, temporal_threshold=30.0):
-    global SELECTED_INPUT_FACE_INDEX, current_video_fps
+    global SELECTED_INPUT_FACE_INDEX, current_video_fps, _last_swapped_preview
 
     from roop.core import live_swap, get_processing_plugins
 
@@ -546,6 +677,7 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     original_frame = util.convert_to_gradio(current_frame)
 
     if not fake_preview or len(roop.globals.INPUT_FACESETS) < 1:
+        _last_swapped_preview = None
         return (gr.Image(value=original_frame, visible=True),
                 gr.Slider(info=timeinfo),
                 gr.Image(value=original_frame, visible=True))
@@ -572,9 +704,11 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
 
     current_frame = live_swap(current_frame, options)
     if current_frame is None:
+        _last_swapped_preview = None
         return (gr.Image(visible=True),
                 gr.Slider(info=timeinfo),
                 gr.Image(value=original_frame, visible=True))
+    _last_swapped_preview = current_frame          # cache for mask editor (BGR numpy)
     return (gr.Image(value=util.convert_to_gradio(current_frame), visible=True),
             gr.Slider(info=timeinfo),
             gr.Image(value=original_frame, visible=True))
@@ -607,7 +741,6 @@ MASKING_HEAD_JS = """
   var _panning = false, _panSX = 0, _panSY = 0, _panOX = 0, _panOY = 0;
   var _bgImage = null, _swappedImage = null, _prevRafPending = false;
   var _pendingMaskJson = null;   /* mask JSON waiting to be restored once canvases are sized */
-
   /* ── Public: called by the Gradio button click (fn=None, js="...") ── */
   window.maskToggle = function() {
     var modal = document.getElementById('roop-mask-modal');
@@ -643,22 +776,36 @@ MASKING_HEAD_JS = """
        Used in the live preview panel as the base image. */
     var swappedUrl = previewImg.src;
 
-    /* origUrl = the unswapped source frame exposed by Python's original_frame_img component.
-       Falls back to swappedUrl if the component has no image yet (e.g. "Face swap frames" off). */
+    /* faceCropUrl = the canonical 512×512 face crop produced by Python's align_crop.
+       The mask is painted in this coordinate system, so it always tracks the face
+       perfectly through any head motion without needing any affine warp.
+       Falls back to origUrl (full frame) if the crop isn't available yet. */
     var origWrap  = document.getElementById('roop_original_frame');
     var origImgEl = origWrap ? origWrap.querySelector('img') : null;
     var origUrl   = (origImgEl && origImgEl.naturalWidth > 0) ? origImgEl.src : swappedUrl;
 
-    /* _bgImage = original source frame — displayed in the editor and used to
-       reveal the un-swapped pixels in exclude regions of the live preview. */
+    var cropStoreEl = document.querySelector('#mask_face_crop_store textarea, #mask_face_crop_store input');
+    var faceCropDataUrl = cropStoreEl ? cropStoreEl.value : '';
+    var faceCropUrl = (faceCropDataUrl && faceCropDataUrl.startsWith('data:image')) ? faceCropDataUrl : origUrl;
+
+    var swpCropStoreEl = document.querySelector('#mask_face_swap_crop_store textarea, #mask_face_swap_crop_store input');
+    var swpCropDataUrl = swpCropStoreEl ? swpCropStoreEl.value : '';
+    /* Live-preview base: swapped face crop when available, else source face crop.
+       Falls back to origUrl only when no face crop was detected at all. */
+    var swpCropUrl = (swpCropDataUrl && swpCropDataUrl.startsWith('data:image')) ? swpCropDataUrl : faceCropUrl;
+
+    /* _bgImage = source face crop — the editor drawing surface.
+       Painting on this ensures the mask is in canonical face-crop coordinates. */
     _bgImage = new Image();
     _bgImage.onload = function() { _schedulePreview(); };
-    _bgImage.src = origUrl;
+    _bgImage.src = faceCropUrl;
 
-    /* _swappedImage = face-swapped result — used as the base of the live preview. */
+    /* _swappedImage = swapped face crop — the live-preview base.
+       The preview shows the swap result with mask overlays so the user can
+       see exactly which face features are included / excluded. */
     _swappedImage = new Image();
     _swappedImage.onload = function() { _schedulePreview(); };
-    _swappedImage.src = swappedUrl;
+    _swappedImage.src = swpCropUrl;
 
     var storeEl = document.querySelector('#mask_json_store textarea, #mask_json_store input');
     var existJson = storeEl ? storeEl.value : '';
@@ -758,7 +905,7 @@ MASKING_HEAD_JS = """
 
     var bgImg = document.getElementById('mask-bg-img');
     bgImg.onload = function() { requestAnimationFrame(_setupCanvas); };
-    bgImg.src = origUrl;  /* always the original unswapped frame */
+    bgImg.src = faceCropUrl;  /* canonical face crop — editor background */
     requestAnimationFrame(_setupCanvas);
 
     /* Store existing mask JSON to be restored inside _setupCanvas once canvases are sized.
@@ -1150,6 +1297,9 @@ MASKING_HEAD_JS = """
     var result = {};
     if (!_isBlank(excC)) result.exclude = _toGray(excC);
     if (!_isBlank(incC)) result.include = _toGray(incC);
+    /* Mark as canonical: mask was painted on the face-crop background,
+       so ProcessMgr can apply it directly without any affine warp. */
+    result.canonical = true;
     _writeToStore(JSON.stringify(result));
     _closeModal(false);
     setTimeout(function() {
@@ -1204,33 +1354,6 @@ def on_set_frame(sender:str, frame_num):
     
     return gen_processing_text(list_files_process[idx].startframe,list_files_process[idx].endframe)
 
-
-def on_preview_mask(frame_num, files, clip_text, mask_engine):
-    from roop.core import live_swap, get_processing_plugins
-    global is_processing
-
-    if is_processing or files is None or selected_preview_index >= len(files) or clip_text is None or frame_num is None:
-        return None
-        
-    filename = files[selected_preview_index].name
-    if util.is_video(filename) or filename.lower().endswith('gif'):
-        current_frame = get_video_frame(filename, frame_num
-                                        )
-    else:
-        current_frame = get_image_frame(filename)
-    if current_frame is None or mask_engine is None:
-        return None
-    if mask_engine == "Clip2Seg":
-        mask_engine = "mask_clip2seg"
-        if clip_text is None or len(clip_text) < 1:
-          mask_engine = None
-    elif mask_engine == "DFL XSeg":
-        mask_engine = "mask_xseg"
-    options = ProcessOptions(get_processing_plugins(mask_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
-                              "all", 0, clip_text, None, 0, 128, False, False, True)
-
-    current_frame = live_swap(current_frame, options)
-    return util.convert_to_gradio(current_frame)
 
 
 def on_clear_input_faces():

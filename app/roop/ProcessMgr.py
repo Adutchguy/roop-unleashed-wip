@@ -87,8 +87,6 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.output_to_file = None
         self.output_to_cam = None
-        # Per-face running mean for temporal artifact detection (#5)
-        self.face_temporal_cache = {}
         # Manual masking (include = force swap, exclude = keep original)
         self.include_mask = None
         self.exclude_mask = None
@@ -195,6 +193,30 @@ class ProcessMgr():
         for p in self.processors:
             if p.type.startswith("frame_"):
                 self.options.frame_processing = True
+
+        # ── Pose-aware source crop warping ───────────────────────────────────
+        # Cache a 512-px align_crop of each source face for use each frame.
+        # No network inference at this stage — the crop is stored as face_3d.
+        if getattr(self.options, 'use_3d_recon', False):
+            try:
+                from roop.face_util import align_crop, get_first_face
+                for fs in self.input_face_datas:
+                    if fs.face_3d is not None:
+                        continue   # already cached from a previous run
+                    src_img = fs.ref_images[0] if fs.ref_images else None
+                    if src_img is None:
+                        continue
+                    src_face = get_first_face(src_img)
+                    if src_face is None or not hasattr(src_face, 'kps') or src_face.kps is None:
+                        continue
+                    src_crop, _ = align_crop(src_img, src_face.kps, 512)
+                    # Store the crop and the source face's 3D landmarks
+                    src_lm68 = None
+                    if hasattr(src_face, 'landmark_3d_68') and src_face.landmark_3d_68 is not None:
+                        src_lm68 = src_face.landmark_3d_68[:, :2].astype(np.float32)
+                    fs.face_3d = {'src_crop': src_crop, 'src_lm68': src_lm68}
+            except Exception as e:
+                print(f"[ProcessMgr] Pose-aware source cache failed: {e}")
 
 
     def run_batch(self, source_files, target_files, threads:int = 1):
@@ -583,6 +605,64 @@ class ProcessMgr():
         fake_frame = aligned_img
         target_face.matrix = M
 
+        # ── 3D source pose matching ───────────────────────────────────────────
+        # If enabled, render the source face from the target head pose and
+        # ── Pose-aware source embedding ───────────────────────────────────────
+        # Warp the source crop to approximate the target head pose, then
+        # re-detect the face in the warped version to get a posed ArcFace
+        # embedding.  Uses only insightface landmarks — no extra downloads.
+        if (getattr(self.options, 'use_3d_recon', False)
+                and inputface is not None
+                and len(self.input_face_datas) > face_index
+                and self.input_face_datas[face_index].face_3d is not None):
+            try:
+                from roop.face_3d_recon import Face3DRecon, landmarks_to_crop_space
+                from roop.face_util import get_first_face as _gff
+
+                face_data = self.input_face_datas[face_index].face_3d
+                src_crop_512 = face_data.get('src_crop')
+                src_lm68_img = face_data.get('src_lm68')   # (68,2) in source image space
+
+                # Map target landmarks into the align_crop (subsample_size) space
+                tgt_lm68_crop = None
+                if hasattr(target_face, 'landmark_3d_68') and target_face.landmark_3d_68 is not None:
+                    tgt_lm68_crop = landmarks_to_crop_space(
+                        target_face.landmark_3d_68, M
+                    )
+
+                if src_crop_512 is not None and tgt_lm68_crop is not None:
+                    # Build source landmarks in the same subsample_size space.
+                    # The source crop is always a centred 512×512 square, so
+                    # landmarks sit at ~subsample_size/2 in crop space; we use
+                    # a coarse approximation for pose estimation — the yaw
+                    # direction is what matters most.
+                    src_lm68_crop = src_lm68_img if src_lm68_img is not None else (
+                        np.full((68, 2), subsample_size / 2.0, dtype=np.float32)
+                    )
+                    # Scale src_lm68 if they're in 512-space but subsample_size differs
+                    if src_lm68_img is not None:
+                        scale = subsample_size / 512.0
+                        src_lm68_crop = src_lm68_img * scale
+
+                    recon = Face3DRecon.instance()
+                    src_crop_ss = cv2.resize(src_crop_512, (subsample_size, subsample_size))
+                    posed_crop = recon.get_posed_source_crop(
+                        src_crop_ss, src_lm68_crop, tgt_lm68_crop,
+                        img_size=subsample_size,
+                    )
+
+                    # Re-detect the face in the posed crop to get its embedding
+                    posed_face = _gff(posed_crop)
+                    if (posed_face is not None
+                            and hasattr(posed_face, 'normed_embedding')
+                            and posed_face.normed_embedding is not None):
+                        import copy
+                        posed_input = copy.copy(inputface)
+                        posed_input.normed_embedding = posed_face.normed_embedding
+                        inputface = posed_input
+            except Exception as e:
+                print(f"[ProcessMgr] Pose-aware embedding failed: {e}")
+
         for p in self.processors:
             if p.type == 'swap':
                 swap_result_frames = []
@@ -720,11 +800,6 @@ class ProcessMgr():
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
 
-        # #5 Temporal artifact detection — apply after mouth restore so the
-        # temporal baseline tracks the mouth-restored frame, not raw swap output.
-        if self.options.restore_occluders:
-            result = self.apply_temporal_occluder_restore(result, frame, target_face)
-
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
             result = self.paste_simple(fake_frame, saved_frame, startX, startY)
@@ -794,9 +869,8 @@ class ProcessMgr():
         img_matte = self.blur_area(img_matte, mask_offsets[4])
         img_matte = img_matte.astype(np.float32) / 255
 
-        # Save 2D mask before reshape — used by overlay and occluder restore
-        need_mask_2d = self.options.show_face_area_overlay or self.options.restore_occluders
-        mask_2d = img_matte.copy() if need_mask_2d else None
+        # Save 2D mask before reshape — used by show_face_area_overlay
+        mask_2d = img_matte.copy() if self.options.show_face_area_overlay else None
 
         img_matte = np.reshape(img_matte, [img_matte.shape[0], img_matte.shape[1], 1])
         paste_face = cv2.warpAffine(upsk_face, IM, (target_img.shape[1], target_img.shape[0]), borderMode=cv2.BORDER_REPLICATE)
@@ -806,12 +880,6 @@ class ProcessMgr():
 
         paste_face = img_matte * paste_face
         paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
-
-        # #3 Skin-tone occluder restore: within the face mask, detect non-skin pixels
-        # in the original frame (hair strands, drool, makeup patches that straddle the
-        # face edge, etc.) and blend them back on top of the swap result.
-        if self.options.restore_occluders and mask_2d is not None:
-            paste_face = self.apply_skin_occluder_restore(paste_face, target_img, mask_2d)
 
         if self.options.show_face_area_overlay:
             # Gradient overlay: green in the core (mask≈1), yellow/orange at the
@@ -824,108 +892,6 @@ class ProcessMgr():
 
         return paste_face.astype(np.uint8)
 
-
-    # ── Occluder restore helpers ────────────────────────────────────────────────
-
-    def apply_skin_occluder_restore(self, swapped_frame: np.ndarray, original_frame: np.ndarray, face_mask_2d: np.ndarray) -> np.ndarray:
-        """#3 — Re-composite non-skin pixels from the original frame on top of the swap.
-
-        Works in HSV space: pixels inside the face mask region that fall outside
-        a broad skin-tone hue/saturation band (dark hair strands, wet artifacts
-        like drool/spit, vivid coloured occlusions) are blended back from the
-        original frame.  `face_mask_2d` is a float32 H×W array (0-1) that
-        constrains the effect to the actual face swap region so background pixels
-        are never touched.
-        """
-        orig = original_frame.astype(np.float32)
-        hsv  = cv2.cvtColor(original_frame, cv2.COLOR_BGR2HSV).astype(np.float32)
-        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-
-        # Broad skin range in HSV (covers pale to dark skin tones).
-        # Hue 0-35 captures orange/yellow/red; 155-180 wraps around the red end.
-        skin = (
-            ((h <= 35) | (h >= 155)) &
-            (s >= 15) &   # avoid achromatic greys/whites being flagged as non-skin
-            (v >= 30)     # avoid very dark shadows being aggressively restored
-        ).astype(np.float32)
-
-        # Occluder weight: non-skin pixels, weighted by how strongly they fall
-        # inside the face mask (so edges get gentler treatment).
-        occluder = (1.0 - skin) * face_mask_2d
-
-        # Smooth edges so the restore doesn't produce hard pixel-level transitions.
-        occluder = cv2.GaussianBlur(occluder, (7, 7), 0)
-        occluder = np.clip(occluder * self.options.occluder_blend, 0.0, 1.0)[:, :, np.newaxis]
-
-        result = swapped_frame * (1.0 - occluder) + orig * occluder
-        return result
-
-
-    def _face_temporal_key(self, target_face: Face) -> tuple:
-        """Stable per-face key based on quantised bounding-box centre."""
-        bbox = target_face.bbox.astype(int)
-        cx = (bbox[0] + bbox[2]) // 2
-        cy = (bbox[1] + bbox[3]) // 2
-        return (cx // 50, cy // 50)
-
-
-    def apply_temporal_occluder_restore(self, swapped_frame: np.ndarray, original_frame: np.ndarray, target_face: Face) -> np.ndarray:
-        """#5 — Detect transient artifacts via per-face temporal comparison.
-
-        Maintains a per-face exponential running mean of the original frame.
-        Pixels that deviate sharply from the mean (sudden drool strand, spit,
-        vomit splash, hair that swings across the face) are flagged and the
-        original pixel is composited back over the swap result.
-
-        The running mean is updated only on *stable* pixels so transient
-        artifacts don't corrupt the baseline.
-        """
-        bbox = target_face.bbox.astype(int)
-        x1 = max(0, bbox[0])
-        y1 = max(0, bbox[1])
-        x2 = min(original_frame.shape[1], bbox[2])
-        y2 = min(original_frame.shape[0], bbox[3])
-        if x2 <= x1 or y2 <= y1:
-            return swapped_frame
-
-        face_key   = self._face_temporal_key(target_face)
-        current    = original_frame[y1:y2, x1:x2].astype(np.float32)
-        threshold  = self.options.temporal_threshold
-        alpha      = 0.08   # EMA decay — lower = slower adaptation, more stable baseline
-
-        if face_key not in self.face_temporal_cache:
-            # Warm up: initialise mean from first frame, nothing to restore yet.
-            self.face_temporal_cache[face_key] = current.copy()
-            return swapped_frame
-
-        mean = self.face_temporal_cache[face_key]
-
-        # Resize cached mean if the face bbox changed size between frames.
-        if mean.shape != current.shape:
-            mean = cv2.resize(mean, (current.shape[1], current.shape[0]))
-
-        # Per-pixel L2 deviation from baseline.
-        deviation = np.sqrt(np.sum((current - mean) ** 2, axis=2))  # H×W
-
-        # Soft threshold → smooth occluder weight (0 = no artifact, 1 = clear artifact).
-        occluder_w = np.clip((deviation - threshold) / max(threshold, 1.0), 0.0, 1.0)
-        occluder_w = cv2.GaussianBlur(occluder_w.astype(np.float32), (11, 11), 0)
-        occluder_w = np.clip(occluder_w * self.options.occluder_blend, 0.0, 1.0)[:, :, np.newaxis]
-
-        # Update mean only on stable (non-artifact) pixels to keep baseline clean.
-        stable = (deviation < threshold).astype(np.float32)[:, :, np.newaxis]
-        self.face_temporal_cache[face_key] = mean + alpha * stable * (current - mean)
-
-        # Blend original over swap where artifacts detected.
-        swapped_region = swapped_frame[y1:y2, x1:x2].astype(np.float32)
-        orig_region    = current   # already float32
-        blended        = swapped_region * (1.0 - occluder_w) + orig_region * occluder_w
-
-        result              = swapped_frame.copy()
-        result[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
-        return result
-
-    # ── End occluder restore helpers ────────────────────────────────────────────
 
     def blur_area(self, img_matte, face_mask_blend):
         # Always apply minimal anti-aliasing after the affine warp
@@ -1183,4 +1149,3 @@ class ProcessMgr():
         self.input_face_datas = []
         self.target_face_datas = []
         self.last_swapped_frame = None
-        self.face_temporal_cache = {}

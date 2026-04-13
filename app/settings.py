@@ -67,10 +67,8 @@ class Settings:
         self.mouth_bottom_scale = self.default_get(data, 'mouth_bottom_scale', 1.0)
         self.mouth_left_scale = self.default_get(data, 'mouth_left_scale', 1.0)
         self.mouth_right_scale = self.default_get(data, 'mouth_right_scale', 1.0)
-        # Occluder artifact restoration
-        self.restore_occluders = self.default_get(data, 'restore_occluders', False)
-        self.occluder_blend = self.default_get(data, 'occluder_blend', 0.8)
-        self.temporal_threshold = self.default_get(data, 'temporal_threshold', 30.0)
+        # 3D source pose matching
+        self.use_3d_recon = self.default_get(data, 'use_3d_recon', False)
 
 
 
@@ -124,10 +122,8 @@ class Settings:
             'mouth_bottom_scale': self.mouth_bottom_scale,
             'mouth_left_scale': self.mouth_left_scale,
             'mouth_right_scale': self.mouth_right_scale,
-            # Occluder artifact restoration
-            'restore_occluders': self.restore_occluders,
-            'occluder_blend': self.occluder_blend,
-            'temporal_threshold': self.temporal_threshold,
+            # 3D source pose matching
+            'use_3d_recon': self.use_3d_recon,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

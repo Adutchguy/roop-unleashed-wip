@@ -53,4 +53,6 @@ BATCH_IMAGE_CHAIN_PROCESSOR = None
 
 CFG: Settings = None
 
+use_3d_recon = False
+
 

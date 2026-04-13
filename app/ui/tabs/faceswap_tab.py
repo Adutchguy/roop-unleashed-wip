@@ -71,19 +71,11 @@ def faceswap_tab():
                             value=roop.globals.CFG.restore_original_mouth,
                             interactive=True,
                         )
-                        chk_restore_occluders = gr.Checkbox(
-                            label="Restore occluded artifacts (hair, drool, spit…)",
-                            value=roop.globals.CFG.restore_occluders,
+                        chk_use_3d_recon = gr.Checkbox(
+                            label="🧊 3D source pose matching (experimental)",
+                            value=roop.globals.CFG.use_3d_recon,
                             interactive=True,
-                        )
-                        occluder_blend = gr.Slider(
-                            0.0, 1.0, value=roop.globals.CFG.occluder_blend,
-                            label="Occluder restore strength", step=0.01, interactive=True,
-                        )
-                        temporal_threshold = gr.Slider(
-                            0.0, 100.0, value=roop.globals.CFG.temporal_threshold,
-                            label="Temporal sensitivity (video artifacts)", step=1.0, interactive=True,
-                            info="Lower = detect subtler changes; 0 disables temporal detection",
+                            info="Warps the source face to approximate the target head pose before embedding — improves profile and angled swaps.",
                         )
                         mask_top = gr.Slider(
                             0, 2.0, value=roop.globals.CFG.mask_top,
@@ -238,9 +230,7 @@ def faceswap_tab():
     ui.globals.ui_clip_text = clip_text
     ui.globals.ui_chk_showmaskoffsets = chk_showmaskoffsets
     ui.globals.ui_chk_restoreoriginalmouth = chk_restoreoriginalmouth
-    ui.globals.ui_chk_restore_occluders = chk_restore_occluders
-    ui.globals.ui_occluder_blend = occluder_blend
-    ui.globals.ui_temporal_threshold = temporal_threshold
+    ui.globals.ui_chk_use_3d_recon = chk_use_3d_recon
     ui.globals.ui_mask_top = mask_top
     ui.globals.ui_mask_bottom = mask_bottom
     ui.globals.ui_mask_left = mask_left
@@ -254,7 +244,7 @@ def faceswap_tab():
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, mask_json_store, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale,
-                        chk_restore_occluders, occluder_blend, temporal_threshold]
+                        chk_use_3d_recon]
     previewoutputs = [previewimage, preview_frame_num, original_frame_img]
     input_faces.select(on_select_input_face, None, None).success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     
@@ -278,9 +268,6 @@ def faceswap_tab():
     mouth_right_scale.release(fn=on_mouth_right_scale_changed, inputs=[mouth_right_scale], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_showmaskoffsets.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_restoreoriginalmouth.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
-    chk_restore_occluders.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
-    occluder_blend.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
-    temporal_threshold.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     selected_mask_engine.change(fn=on_mask_engine_changed, inputs=[selected_mask_engine], outputs=[clip_text], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
 
     target_faces.select(on_select_target_face, None, None)
@@ -297,7 +284,7 @@ def faceswap_tab():
     start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, mask_json_store,
-                    chk_restore_occluders, occluder_blend, temporal_threshold],
+                    chk_use_3d_recon],
         outputs=[bt_start, bt_stop], show_progress='full')
 
     bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop], queue=False)
@@ -325,6 +312,7 @@ def faceswap_tab():
     autorotate.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     num_swap_steps.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     ui.globals.ui_upscale.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    chk_use_3d_recon.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
 
     bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[target_faces, selected_face_detection])
     set_frame_start.click(fn=on_set_frame, inputs=[set_frame_start, preview_frame_num], outputs=[text_frame_clip])
@@ -409,7 +397,18 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                     selection_faces_data = extract_face_images(filename,  (False, 0))
                     for f in selection_faces_data:
                         face = f[0]
-                        face.mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
+                        face.mask_offsets = [
+                            roop.globals.CFG.mask_top,
+                            roop.globals.CFG.mask_bottom,
+                            roop.globals.CFG.mask_left,
+                            roop.globals.CFG.mask_right,
+                            roop.globals.CFG.face_mask_blend,
+                            roop.globals.CFG.mouth_mask_blend,
+                            roop.globals.CFG.mouth_top_scale,
+                            roop.globals.CFG.mouth_bottom_scale,
+                            roop.globals.CFG.mouth_left_scale,
+                            roop.globals.CFG.mouth_right_scale,
+                        ]
                         face_set.faces.append(face)
                         if is_first: 
                             image = util.convert_to_gradio(f[1])
@@ -429,7 +428,18 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
             for f in selection_faces_data:
                 face_set = FaceSet()
                 face = f[0]
-                face.mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
+                face.mask_offsets = [
+                    roop.globals.CFG.mask_top,
+                    roop.globals.CFG.mask_bottom,
+                    roop.globals.CFG.mask_left,
+                    roop.globals.CFG.mask_right,
+                    roop.globals.CFG.face_mask_blend,
+                    roop.globals.CFG.mouth_mask_blend,
+                    roop.globals.CFG.mouth_top_scale,
+                    roop.globals.CFG.mouth_bottom_scale,
+                    roop.globals.CFG.mouth_left_scale,
+                    roop.globals.CFG.mouth_right_scale,
+                ]
                 face_set.faces.append(face)
                 image = util.convert_to_gradio(f[1])
                 ui.globals.ui_input_thumbs.append(image)
@@ -638,12 +648,23 @@ def get_face_crop_for_mask(frame_num, files):
 
 def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection, face_distance, blend_ratio,
                               selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
-                              restore_occluders=False, occluder_blend=0.8, temporal_threshold=30.0):
+                              use_3d_recon=False):
     global SELECTED_INPUT_FACE_INDEX, current_video_fps, _last_swapped_preview
 
     from roop.core import live_swap, get_processing_plugins
 
-    mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
+    mask_offsets = [
+        roop.globals.CFG.mask_top,
+        roop.globals.CFG.mask_bottom,
+        roop.globals.CFG.mask_left,
+        roop.globals.CFG.mask_right,
+        roop.globals.CFG.face_mask_blend,
+        roop.globals.CFG.mouth_mask_blend,
+        roop.globals.CFG.mouth_top_scale,
+        roop.globals.CFG.mouth_bottom_scale,
+        roop.globals.CFG.mouth_left_scale,
+        roop.globals.CFG.mouth_right_scale,
+    ]
     if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
         if not hasattr(roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0], 'mask_offsets'):
             roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = list(mask_offsets)
@@ -700,7 +721,7 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
 
     options = ProcessOptions(get_processing_plugins(mask_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
                               roop.globals.face_swap_mode, face_index, clip_text, mask_json or None, num_steps, roop.globals.subsample_size, show_face_area, restore_original_mouth,
-                              restore_occluders=restore_occluders, occluder_blend=occluder_blend, temporal_threshold=temporal_threshold)
+                              use_3d_recon=use_3d_recon)
 
     current_frame = live_swap(current_frame, options)
     if current_frame is None:
@@ -1390,7 +1411,7 @@ def translate_swap_mode(dropdown_text):
 
 def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
                 selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate, restore_original_mouth, num_swap_steps, upsample, mask_json,
-                restore_occluders=False, occluder_blend=0.8, temporal_threshold=30.0, progress=gr.Progress()):
+                use_3d_recon=False, progress=gr.Progress()):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
     global is_processing, list_files_process
@@ -1434,7 +1455,7 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.globals.max_memory = roop.globals.CFG.memory_limit if roop.globals.CFG.memory_limit > 0 else None
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
-                          restore_occluders=restore_occluders, occluder_blend=occluder_blend, temporal_threshold=temporal_threshold)
+                          use_3d_recon=use_3d_recon)
     is_processing = False
     yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
 

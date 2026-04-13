@@ -10,6 +10,7 @@ class FaceSet:
         self.faces = []
         self.ref_images = []
         self.embeddings_backup = None
+        self.face_3d = None   # populated by face_3d_recon when use_3d_recon is enabled
 
     def AverageEmbeddings(self):
         if len(self.faces) > 1 and self.embeddings_backup is None:

@@ -509,9 +509,8 @@ _SESSION_CFG_KEYS = [
     'output_method', 'mask_engine', 'mask_clip_text', 'show_mask_offsets',
     'restore_original_mouth', 'mask_top', 'mask_bottom', 'mask_left', 'mask_right',
     'face_mask_blend', 'mouth_mask_blend',
-    # Additional settings added in later sessions
-    'restore_occluders', 'occluder_blend', 'temporal_threshold',
     'mouth_top_scale', 'mouth_bottom_scale', 'mouth_left_scale', 'mouth_right_scale',
+    'use_3d_recon',
 ]
 
 
@@ -541,14 +540,11 @@ def _session_components():
         ui.globals.ui_mask_right,
         ui.globals.ui_face_mask_blend,
         ui.globals.ui_mouth_mask_blend,
-        # Additional settings added in later sessions
-        ui.globals.ui_chk_restore_occluders,
-        ui.globals.ui_occluder_blend,
-        ui.globals.ui_temporal_threshold,
         ui.globals.ui_mouth_top_scale,
         ui.globals.ui_mouth_bottom_scale,
         ui.globals.ui_mouth_left_scale,
         ui.globals.ui_mouth_right_scale,
+        ui.globals.ui_chk_use_3d_recon,
     ]
 
 

@@ -10,19 +10,24 @@ Uncensored Deepfakes for images and videos without training and an easy-to-use G
 
 ### Features
 
-- Platform-independant Browser GUI
+- Platform-independent browser GUI with Carbon Dark theme
 - Selection of multiple input/output faces in one go
-- Many different swapping modes, first detected, face selections, by gender
-- Batch processing of images/videos
-- Masking of face occluders using text prompts or automatically
-- Optional Face Upscaler/Restoration using different enhancers
-- Preview swapping from different video frames
-- Live Fake Cam using your webcam
-- Extras Tab for cutting videos etc.
-- Settings - storing configuration for next session
-- Theme Support
-
-and lots more...
+- Many different swapping modes: first detected, face selections, by gender, all faces
+- Batch processing of images and videos
+- Advanced masking with zoom/pan editor and side-by-side live preview
+  - Face-tracking manual mask that follows the face across video frames
+  - Per-side face offset sliders (Top / Bottom / Left / Right)
+  - Per-side mouth mask sliders (Top / Bottom / Left / Right)
+  - Face and mouth mask edge-blend sliders with gradient overlay
+  - Landmark-based mask outline for angled and profile faces
+  - Text-prompt masking (CLIP) and automatic XSeg occlusion masking
+- 3D source pose matching — warps the source face to match the target head angle for improved profile and angled swaps (experimental)
+- Optional face upscaler/restoration using CodeFormer, GFPGAN, DMDNet, RestoreFormer++ and others
+- Restore original mouth area option
+- Auto-refresh preview on every setting change with side-by-side face-crop comparison
+- Extras tab for resizing, rotating, cropping and changing FPS of video/image files
+- All settings (including mask offsets) saved and fully restored between sessions
+- Theme support
 
 
 ## Disclaimer
@@ -64,6 +69,21 @@ Additional commandline arguments are currently unsupported and settings should b
 
 
 ### Changelog
+
+**2025 (fork)**
+
+- Added 3D source pose matching — pose-aware warp using insightface landmarks, no additional model downloads required (experimental)
+- Advanced masking overhaul: zoom/pan mask editor, side-by-side live preview, face-tracking manual mask that warps to follow the face across video frames
+- Per-side mouth mask sliders (Top / Bottom / Left / Right) and per-side face offset sliders
+- Face and mouth mask edge-blend sliders with gradient overlay in preview
+- Landmark-based mask outline automatically constrains the mask to the face silhouette for angled and profile shots
+- Auto-refresh preview on every setting change; side-by-side face-crop comparison panel
+- Extras tab redesigned: upload/preview, then resize, rotate, crop and change FPS with a single Apply button
+- All mask offset and session settings now fully restored on reload (were previously reset to defaults until manually adjusted)
+- Carbon Dark UI theme with reactive controls
+- Removed: Live Cam tab, Restore Occluded Artifacts, Occluder Restore Strength, Temporal Sensitivity, Final Image / Processed Files output panels, Video FPS slider
+- Fixed: duplicate face import on source upload, blue mouth-mask artifact on greyscale media, mouth mask feather erosion clipping lips, settings reset on target file upload, video frame seeking crash at frame 0
+
 
 **28.9.2024** v4.3.1
 

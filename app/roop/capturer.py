@@ -25,7 +25,8 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Optional[Frame]:
         current_video_path = video_path
         current_frame_total = current_capture.get(cv2.CAP_PROP_FRAME_COUNT)
 
-    current_capture.set(cv2.CAP_PROP_POS_FRAMES, min(current_frame_total, frame_number - 1))
+    target = max(0, min(int(current_frame_total) - 1, frame_number - 1))
+    current_capture.set(cv2.CAP_PROP_POS_FRAMES, target)
     has_frame, frame = current_capture.read()
     if has_frame:
         return frame

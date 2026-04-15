@@ -188,10 +188,23 @@ def has_extension(filepath: str, extensions: List[str]) -> bool:
     return filepath.lower().endswith(tuple(extensions))
 
 
+def is_animated_webp(image_path: str) -> bool:
+    """Return True if the file is an animated (multi-frame) WebP."""
+    if not image_path or not image_path.lower().endswith(".webp"):
+        return False
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            return getattr(img, "n_frames", 1) > 1
+    except Exception:
+        return False
+
+
 def is_image(image_path: str) -> bool:
     if image_path and os.path.isfile(image_path):
-        if image_path.endswith(".webp"):
-            return True
+        if image_path.lower().endswith(".webp"):
+            # Animated webp is not a static image
+            return not is_animated_webp(image_path)
         mimetype, _ = mimetypes.guess_type(image_path)
         return bool(mimetype and mimetype.startswith("image/"))
     return False

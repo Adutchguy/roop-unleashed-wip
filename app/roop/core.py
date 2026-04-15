@@ -304,17 +304,17 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
 
     for index, f in enumerate(files):
         fullname = f.filename
-        if util.has_image_extension(fullname):
+        if util.is_video(fullname) or util.has_extension(fullname, ['gif']) or util.is_animated_webp(fullname):
+            destination = util.get_destfilename_from_path(fullname, roop.globals.output_path, f'__temp.{roop.globals.CFG.output_video_format}')
+            f.finalname = destination
+            videofiles.append(f)
+
+        elif util.has_image_extension(fullname):
             destination = util.get_destfilename_from_path(fullname, roop.globals.output_path, f'.{roop.globals.CFG.output_image_format}')
             destination = util.replace_template(destination, index=index)
             pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
             f.finalname = destination
             imagefiles.append(f)
-
-        elif util.is_video(fullname) or util.has_extension(fullname, ['gif']):
-            destination = util.get_destfilename_from_path(fullname, roop.globals.output_path, f'__temp.{roop.globals.CFG.output_video_format}')
-            f.finalname = destination
-            videofiles.append(f)
 
 
 

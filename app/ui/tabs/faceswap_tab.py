@@ -43,7 +43,7 @@ def faceswap_tab():
     with gr.Tab("🎭 Face Swap"):
         with gr.Row(variant='panel'):
             bt_srcfiles = gr.Files(label='Source Images or Facesets', file_count="multiple", file_types=["image", ".fsz"], elem_id='filelist', height=233)
-            bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video"], elem_id='filelist', height=233)
+            bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video", ".webp"], elem_id='filelist', height=233)
         with gr.Row(variant='panel'):
             with gr.Column(scale=2):
                 with gr.Row():
@@ -533,7 +533,7 @@ def on_use_face_from_selected(files, frame_num):
 
     if util.is_image(roop.globals.target_path) and not roop.globals.target_path.lower().endswith(('gif')):
         faces_data = extract_face_images(roop.globals.target_path, (False, 0))
-    elif util.is_video(roop.globals.target_path) or roop.globals.target_path.lower().endswith(('gif')):
+    elif util.is_video(roop.globals.target_path) or roop.globals.target_path.lower().endswith(('gif')) or util.is_animated_webp(roop.globals.target_path):
         faces_data = extract_face_images(roop.globals.target_path, (True, frame_num))
     else:
         gr.Info('Unknown image/video type!')
@@ -632,7 +632,7 @@ def get_face_crop_for_mask(frame_num, files):
     if files is None or selected_preview_index >= len(files) or frame_num is None:
         return "", ""
     filename = files[selected_preview_index].name
-    if util.is_video(filename) or filename.lower().endswith('gif'):
+    if util.is_video(filename) or filename.lower().endswith('gif') or util.is_animated_webp(filename):
         current_frame = get_video_frame(filename, frame_num)
     else:
         current_frame = get_image_frame(filename)
@@ -677,7 +677,7 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
         return None, gr.Slider(info=timeinfo), None
 
     filename = files[selected_preview_index].name
-    if util.is_video(filename) or filename.lower().endswith('gif'):
+    if util.is_video(filename) or filename.lower().endswith('gif') or util.is_animated_webp(filename):
         current_frame = get_video_frame(filename, frame_num)
         if current_video_fps == 0:
             current_video_fps = 1
@@ -1481,13 +1481,13 @@ def on_destfiles_changed(destfiles):
     
     filename = list_files_process[idx].filename
     
-    if util.is_video(filename) or filename.lower().endswith('gif'):
+    if util.is_video(filename) or filename.lower().endswith('gif') or util.is_animated_webp(filename):
         total_frames = get_video_frame_total(filename)
         if total_frames is None or total_frames < 1:
             total_frames = 1
             gr.Warning(f"Corrupted video {filename}, can't detect number of frames!")
         else:
-            current_video_fps = util.detect_fps(filename)
+            current_video_fps = util.detect_fps(filename) if not filename.lower().endswith('.webp') else 15
     else:
         total_frames = 1
     list_files_process[idx].endframe = total_frames
@@ -1503,9 +1503,9 @@ def on_destfiles_selected(evt: gr.SelectData):
         selected_preview_index = evt.index
     idx = selected_preview_index
     filename = list_files_process[idx].filename
-    if util.is_video(filename) or filename.lower().endswith('gif'):
+    if util.is_video(filename) or filename.lower().endswith('gif') or util.is_animated_webp(filename):
         total_frames = get_video_frame_total(filename)
-        current_video_fps = util.detect_fps(filename)
+        current_video_fps = util.detect_fps(filename) if not filename.lower().endswith('.webp') else 15
         if list_files_process[idx].endframe == 0:
             list_files_process[idx].endframe = total_frames
     else:

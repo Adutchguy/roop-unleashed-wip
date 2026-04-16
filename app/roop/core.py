@@ -45,6 +45,7 @@ clip_text = None
 call_display_ui = None
 
 process_mgr = None
+_preview_process_mgr = None   # dedicated instance for live_swap — never shared with batch
 
 
 if 'ROCMExecutionProvider' in roop.globals.execution_providers:
@@ -135,12 +136,15 @@ def limit_resources() -> None:
 def release_resources() -> None:
     import gc
     from roop.face_util import release_face_analyser
-    global process_mgr
+    global process_mgr, _preview_process_mgr
 
     release_face_analyser()
     if process_mgr is not None:
         process_mgr.release_resources()
         process_mgr = None
+    if _preview_process_mgr is not None:
+        _preview_process_mgr.release_resources()
+        _preview_process_mgr = None
 
     gc.collect()
     if torch is not None:
@@ -234,18 +238,16 @@ def get_processing_plugins(masking_engine):
 
 
 def live_swap(frame, options):
-    global process_mgr
+    global _preview_process_mgr
 
     if frame is None:
         return frame
 
-    if process_mgr is None:
-        process_mgr = ProcessMgr(None)
-    
-#    if len(roop.globals.INPUT_FACESETS) <= selected_index:
-#        selected_index = 0
-    process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
-    newframe = process_mgr.process_frame(frame)
+    if _preview_process_mgr is None:
+        _preview_process_mgr = ProcessMgr(None)
+
+    _preview_process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+    newframe = _preview_process_mgr.process_frame(frame)
     if newframe is None:
         return frame
     return newframe

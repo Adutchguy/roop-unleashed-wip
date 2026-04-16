@@ -273,6 +273,17 @@ class ProcessMgr():
             self.frames_queue[i].put(None)
 
 
+    def read_frames_webp_thread(self, bgr_frames, frame_start, frame_end, num_threads):
+        """Feed pre-decoded BGR frames (from animated webp via PIL) into the processing queue."""
+        subset = bgr_frames[frame_start:frame_end] if frame_end > frame_start else bgr_frames[frame_start:]
+        for num_frame, frame in enumerate(subset):
+            if not roop.globals.processing:
+                break
+            self.frames_queue[num_frame % num_threads].put(frame, block=True)
+        for i in range(num_threads):
+            self.frames_queue[i].put(None)
+
+
     def process_videoframes(self, threadindex, progress) -> None:
         while True:
             frame = self.frames_queue[threadindex].get()
@@ -312,10 +323,26 @@ class ProcessMgr():
 
 
     def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
-        cap = cv2.VideoCapture(source_video)
-        frame_count = (frame_end - frame_start) + 1
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # Animated WebP: OpenCV cannot decode it — use PIL-based reader instead
+        is_awebp = source_video.lower().endswith('.webp')
+        cap = None
+        awebp_frames = None
+
+        if is_awebp:
+            from roop.capturer import _load_animated_webp
+            import roop.capturer as _capturer_mod
+            _load_animated_webp(source_video)
+            awebp_frames = _capturer_mod._awebp_frames or []
+            if awebp_frames:
+                height, width = awebp_frames[0].shape[:2]
+            else:
+                width, height = 0, 0
+            frame_count = len(awebp_frames[frame_start:frame_end]) if frame_end > frame_start else len(awebp_frames[frame_start:])
+        else:
+            cap = cv2.VideoCapture(source_video)
+            frame_count = (frame_end - frame_start) + 1
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         processed_resolution = None
         for p in self.processors:
@@ -343,7 +370,10 @@ class ProcessMgr():
         if self.output_to_cam:
             self.streamwriter = StreamWriter((width, height), int(fps))
 
-        readthread = Thread(target=self.read_frames_thread, args=(cap, frame_start, frame_end, threads))
+        if is_awebp:
+            readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
+        else:
+            readthread = Thread(target=self.read_frames_thread, args=(cap, frame_start, frame_end, threads))
         readthread.start()
 
         writethread = Thread(target=self.write_frames_thread)
@@ -361,7 +391,8 @@ class ProcessMgr():
 
         readthread.join()
         writethread.join()
-        cap.release()
+        if cap is not None:
+            cap.release()
         if self.output_to_file:
             self.videowriter.close()
             self.videowriter = None  # FIX: null out so GC can collect

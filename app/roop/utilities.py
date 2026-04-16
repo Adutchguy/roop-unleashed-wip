@@ -34,6 +34,23 @@ if platform.system().lower() == "darwin":
 
 # https://github.com/facefusion/facefusion/blob/master/facefusion
 def detect_fps(target_path: str) -> float:
+    # Animated WebP: OpenCV returns 0 FPS — derive from PIL frame durations instead
+    if target_path and target_path.lower().endswith('.webp'):
+        try:
+            from PIL import Image
+            with Image.open(target_path) as img:
+                n = getattr(img, 'n_frames', 1)
+                if n > 1:
+                    durations = []
+                    for i in range(n):
+                        img.seek(i)
+                        d = img.info.get('duration', 40)  # duration in ms, default 40ms = 25fps
+                        durations.append(d)
+                    avg_ms = sum(durations) / len(durations) if durations else 40
+                    return round(1000.0 / avg_ms, 2) if avg_ms > 0 else 25.0
+        except Exception:
+            pass
+        return 25.0
     fps = 24.0
     cap = cv2.VideoCapture(target_path)
     if cap.isOpened():
@@ -49,6 +66,14 @@ def detect_dimensions(target_path: str):
         if img is not None:
             return img.shape[1], img.shape[0]
         return 0, 0
+    # Animated WebP: OpenCV VideoCapture returns 0x0 — use PIL instead
+    if target_path and target_path.lower().endswith('.webp') and is_animated_webp(target_path):
+        try:
+            from PIL import Image
+            with Image.open(target_path) as img:
+                return img.width, img.height
+        except Exception:
+            return 0, 0
     cap = cv2.VideoCapture(target_path)
     if cap.isOpened():
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -200,11 +225,26 @@ def is_animated_webp(image_path: str) -> bool:
         return False
 
 
+def is_animated_gif(image_path: str) -> bool:
+    """Return True if the file is an animated (multi-frame) GIF."""
+    if not image_path or not image_path.lower().endswith(".gif"):
+        return False
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            return getattr(img, "n_frames", 1) > 1
+    except Exception:
+        return False
+
+
 def is_image(image_path: str) -> bool:
     if image_path and os.path.isfile(image_path):
         if image_path.lower().endswith(".webp"):
             # Animated webp is not a static image
             return not is_animated_webp(image_path)
+        if image_path.lower().endswith(".gif"):
+            # Animated gif is not a static image
+            return not is_animated_gif(image_path)
         mimetype, _ = mimetypes.guess_type(image_path)
         return bool(mimetype and mimetype.startswith("image/"))
     return False

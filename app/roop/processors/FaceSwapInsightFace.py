@@ -41,10 +41,14 @@ class FaceSwapInsightFace():
         latent = source_face.normed_embedding.reshape((1,-1))
         latent = np.dot(latent, self.emap)
         latent /= np.linalg.norm(latent)
-        io_binding = self.model_swap_insightface.io_binding()           
+        io_binding = self.model_swap_insightface.io_binding()
         io_binding.bind_cpu_input("target", temp_frame)
         io_binding.bind_cpu_input("source", latent)
-        io_binding.bind_output("output", self.devicename)
+        # Bind output to CPU directly — avoids a TensorRT/CUDA provider bug where
+        # copy_outputs_to_cpu() raises "no data transfer registered" when the output
+        # was bound to the GPU device name.  Letting ONNX Runtime transfer the result
+        # to CPU as part of the run is equivalent and works across all providers.
+        io_binding.bind_output("output")
         self.model_swap_insightface.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()[0]
         return ort_outs[0]

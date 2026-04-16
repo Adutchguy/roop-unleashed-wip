@@ -79,15 +79,46 @@ def create_gif_from_video(video_path: str, gif_path):
     frame = get_video_frame(video_path)
     release_video()
 
-    scalex = frame.shape[0]
-    scaley = frame.shape[1]
+    # frame.shape is (height, width, channels); FFmpeg scale expects width:height
+    width  = frame.shape[1]
+    height = frame.shape[0]
 
-    if scalex >= scaley:
-        scaley = -1
+    # Keep the larger dimension at its original size; auto-scale the other.
+    if width >= height:
+        scale = f'{width}:-1'
     else:
-        scalex = -1
+        scale = f'-1:{height}'
 
-    run_ffmpeg(['-i', video_path, '-vf', f'fps={fps},scale={int(scalex)}:{int(scaley)}:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse', '-loop', '0', gif_path])
+    run_ffmpeg(['-i', video_path, '-vf', f'fps={fps},scale={scale}:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse', '-loop', '0', gif_path])
+
+
+def apply_media_transforms_gif(input_path: str, output_path: str,
+                                vf_filters: list, target_fps=None) -> bool:
+    """Re-encode an animated GIF with correct palette generation.
+
+    FFmpeg's default GIF encoder uses a poor global palette that introduces
+    colour artifacts on grayscale content.  This function uses the two-pass
+    palettegen+paletteuse pipeline so the output palette is optimised for the
+    actual frame content — exactly the same approach used by create_gif_from_video.
+
+    vf_filters  - list of video filters to apply BEFORE palette generation
+                  (e.g. crop, scale, transpose).  May be empty.
+    target_fps  - if not None, a fps= filter is prepended so the frame-rate
+                  of the output GIF matches the requested value.
+    """
+    all_filters = list(vf_filters)
+    if target_fps is not None:
+        all_filters.insert(0, f'fps={target_fps}')
+
+    if all_filters:
+        user_chain = ','.join(all_filters) + ','
+    else:
+        user_chain = ''
+
+    # Two-pass palette approach in a single ffmpeg invocation using filtergraph.
+    # The filter chain is: [user filters] → split → palettegen / paletteuse
+    vf = f'{user_chain}split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
+    return run_ffmpeg(['-i', input_path, '-vf', vf, '-loop', '0', output_path])
 
 
 
@@ -144,14 +175,84 @@ def apply_media_transforms(input_path: str, output_path: str,
     """Apply a list of -vf filters in a single ffmpeg pass."""
     if not vf_filters:
         return False
+    codec   = roop.globals.video_encoder   or 'libx264'
+    quality = roop.globals.video_quality   if roop.globals.video_quality is not None else 14
     vf = ','.join(vf_filters)
     args = ['-i', input_path, '-vf', vf]
     if is_video:
-        args += ['-c:v', roop.globals.video_encoder,
-                 '-crf', str(roop.globals.video_quality),
-                 '-c:a', 'copy']
+        args += ['-c:v', codec, '-crf', str(quality), '-c:a', 'copy']
     args.append(output_path)
     return run_ffmpeg(args)
+
+
+def apply_media_transforms_webp(input_path: str, output_path: str,
+                                vf_filters: list, fps: float) -> bool:
+    """Process animated webp: decode frames via PIL, pipe through ffmpeg with vf filters.
+
+    FFmpeg cannot reliably decode animated webp files with malformed Exif headers.
+    This function bypasses that by loading frames with Pillow and feeding raw BGR
+    video into ffmpeg via stdin, applying any vf filters in a single pass.
+    Output is always an mp4 (caller must ensure output_path has .mp4 extension).
+    """
+    import subprocess
+    import numpy as np
+    import cv2
+    from PIL import Image
+
+    try:
+        frames = []
+        width = height = 0
+        with Image.open(input_path) as img:
+            width, height = img.width, img.height
+            for i in range(getattr(img, 'n_frames', 1)):
+                img.seek(i)
+                frame_bgr = cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR)
+                frames.append(frame_bgr)
+    except Exception as e:
+        print(f"apply_media_transforms_webp: failed to load frames: {e}")
+        return False
+
+    if not frames or width == 0 or height == 0:
+        print("apply_media_transforms_webp: no frames or zero dimensions")
+        return False
+
+    # video_encoder/quality may be None if faceswap tab hasn't run yet — use safe defaults
+    codec   = roop.globals.video_encoder   or 'libx264'
+    quality = roop.globals.video_quality   if roop.globals.video_quality is not None else 14
+
+    vf = ','.join(vf_filters)
+    cmd = [
+        'ffmpeg', '-hide_banner', '-hwaccel', 'auto', '-y',
+        '-loglevel', roop.globals.log_level,
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{width}x{height}',
+        '-pix_fmt', 'bgr24',
+        '-r', str(fps),
+        '-an', '-i', '-',
+        '-vf', vf,
+        '-c:v', codec,
+        '-crf', str(quality),
+        '-pix_fmt', 'yuv420p',
+        output_path,
+    ]
+    print(f"apply_media_transforms_webp: piping {len(frames)} frames @ {fps} fps")
+    print(' '.join(cmd))
+
+    try:
+        popen_params = {'stdin': subprocess.PIPE, 'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+        if os.name == 'nt':
+            popen_params['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+        proc = subprocess.Popen(cmd, **popen_params)
+        for frame in frames:
+            proc.stdin.write(frame.tobytes())
+        proc.stdin.close()
+        _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            print(f"apply_media_transforms_webp ffmpeg error:\n{stderr.decode(errors='replace')}")
+        return proc.returncode == 0
+    except Exception as e:
+        print(f"apply_media_transforms_webp: subprocess failed: {e}")
+        return False
 
 
 def restore_audio(intermediate_video: str, original_video: str, trim_frame_start, trim_frame_end, final_video : str) -> None:

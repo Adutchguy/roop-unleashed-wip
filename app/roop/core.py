@@ -367,7 +367,9 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     util.sort_rename_frames(extract_path)                                    
                 
                 ffmpeg.create_video(v.filename, v.finalname, fps)
-                if not roop.globals.keep_frames:
+                if roop.globals.keep_frames:
+                    util.move_frames_to_output(v.filename)
+                else:
                     util.delete_temp_frames(temp_frame_paths[0])
             else:
                 if util.has_extension(v.filename, ['gif']):

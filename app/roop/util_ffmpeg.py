@@ -73,15 +73,8 @@ def create_video(target_path: str, dest_filename: str, fps: float = 24.0, temp_d
 
 
 def create_gif_from_video(video_path: str, gif_path):
-    from roop.capturer import get_video_frame, release_video
-
     fps = util.detect_fps(video_path)
-    frame = get_video_frame(video_path)
-    release_video()
-
-    # frame.shape is (height, width, channels); FFmpeg scale expects width:height
-    width  = frame.shape[1]
-    height = frame.shape[0]
+    width, height = util.detect_dimensions(video_path)
 
     # Keep the larger dimension at its original size; auto-scale the other.
     if width >= height:

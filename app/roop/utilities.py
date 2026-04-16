@@ -205,6 +205,29 @@ def delete_temp_frames(filename: str) -> None:
     shutil.rmtree(dir)
 
 
+def get_frames_output_path(target_path: str) -> str:
+    """Return the directory where extracted frames are saved when keep_frames is enabled.
+    Frames are placed in a <videoname>_frames sub-folder inside the configured output directory."""
+    target_name, _ = os.path.splitext(os.path.basename(target_path))
+    return os.path.join(roop.globals.output_path, f"{target_name}_frames")
+
+
+def move_frames_to_output(target_path: str) -> None:
+    """Move the extracted temp frames to a persistent sub-folder in the output directory."""
+    temp_dir = get_temp_directory_path(target_path)
+    frames_out_dir = get_frames_output_path(target_path)
+    if not os.path.isdir(temp_dir):
+        return
+    # Remove any stale frames folder from a previous run before moving
+    if os.path.isdir(frames_out_dir):
+        shutil.rmtree(frames_out_dir)
+    shutil.move(temp_dir, frames_out_dir)
+    # Clean up the now-empty parent temp directory if nothing else uses it
+    parent = os.path.dirname(temp_dir)
+    if os.path.exists(parent) and not os.listdir(parent):
+        os.rmdir(parent)
+
+
 def has_image_extension(image_path: str) -> bool:
     return image_path.lower().endswith(("png", "jpg", "jpeg", "webp"))
 

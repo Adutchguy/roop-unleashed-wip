@@ -275,7 +275,7 @@ def faceswap_tab():
 
     bt_destfiles.change(fn=on_destfiles_changed, inputs=[bt_destfiles], outputs=[preview_frame_num, text_frame_clip], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     bt_destfiles.select(fn=on_destfiles_selected, outputs=[preview_frame_num, text_frame_clip], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
-    bt_destfiles.clear(fn=on_clear_destfiles, outputs=[target_faces, mask_json_store]).then(
+    bt_destfiles.clear(fn=on_clear_destfiles, outputs=[target_faces, mask_json_store, preview_frame_num, text_frame_clip]).then(
         fn=None, js="() => { if (window.maskReset) maskReset(); }"
     )
     bt_clear_input_faces.click(fn=on_clear_input_faces, outputs=[input_faces])
@@ -1385,8 +1385,10 @@ def on_clear_input_faces():
 def on_clear_destfiles():
     roop.globals.TARGET_FACES.clear()
     ui.globals.ui_target_thumbs.clear()
-    # Also clear the manual mask — it belongs to the removed media
-    return ui.globals.ui_target_thumbs, ""
+    # Also clear the manual mask — it belongs to the removed media.
+    # Reset preview_frame_num to max=1 so stale cached values don't cause
+    # a Gradio bounds error on the next event that includes the slider.
+    return ui.globals.ui_target_thumbs, "", gr.Slider(value=1, maximum=1, info='0:00:00'), ''
 
 
 def index_of_no_face_action(dropdown_text):

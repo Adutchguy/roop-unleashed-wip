@@ -36,6 +36,10 @@ current_video_fps = 50
 # passed as a Gradio event input (which caused slider-value caching bugs).
 _last_swapped_preview = None
 
+# Last ProcessOptions used for a fake-preview swap.  Stored so _fbf_fetch_crop
+# can re-run the swap for any FBF frame without needing all the Gradio inputs.
+_last_preview_options = None
+
 
 def faceswap_tab():
     global no_face_choices, previewimage
@@ -119,8 +123,9 @@ def faceswap_tab():
                             label="Mouth Mask Edge Blend", step=1, interactive=True,
                         )
                         bt_toggle_masking = gr.Button(
-                            "🎭 Edit Mask", variant="secondary", size="sm",
-                            elem_id="btn_toggle_masking"
+                            "🎭 Edit Mask",
+                            variant="primary",
+                            elem_id="btn_toggle_masking",
                         )
                         selected_mask_engine = gr.Dropdown(
                             ["None", "Clip2Seg", "DFL XSeg"],
@@ -140,6 +145,19 @@ def faceswap_tab():
                 # visible=False would remove it from the DOM entirely (Svelte {#if} block), making it
                 # unfindable by JS and excluded from Gradio's input payload — which was our bug.
                 mask_json_store = gr.Textbox(value="", visible="hidden", elem_id="mask_json_store", label="Mask Data")
+                # mask_per_frame_store: holds per-frame canvas masks as a JSON object
+                # {"1": maskJson, "5": maskJson, ...} keyed by 1-based frame number string.
+                # Empty string means no per-frame masks — use the global mask_json_store for all frames.
+                mask_per_frame_store = gr.Textbox(value="", visible="hidden",
+                                                   elem_id="mask_per_frame_store",
+                                                   label="Per-Frame Mask Data")
+                # fbf_frame_num_store: JS writes "frameNum:seq" here from _fbfFetchFaceCrop.
+                # The .change() event on this textbox triggers the Python face-crop fetch.
+                # (A hidden button was tried but gr.Button(visible=False) is not rendered
+                # to the DOM in Gradio 5, making programmatic clicks impossible.)
+                fbf_frame_num_store = gr.Textbox(value="1", visible="hidden",
+                                                  elem_id="fbf_frame_num_store",
+                                                  label="FBF Frame Number")
                 # mask_kps_store: holds the 5-point face keypoints (JSON) of the reference frame
                 # where the mask was painted; embedded in the mask JSON for per-frame tracking.
                 mask_kps_store = gr.Textbox(value="", visible="hidden", elem_id="mask_kps_store", label="Mask KPS")
@@ -168,7 +186,8 @@ def faceswap_tab():
                     bt_refresh_preview = gr.Button("🔄 Refresh", variant='secondary', size='sm', elem_id="btn_refresh_preview")
                     bt_use_face_from_preview = gr.Button("Use Face from this Frame", variant='primary', size='sm')
                 with gr.Row():
-                    preview_frame_num = gr.Slider(1, 1, value=1, label="Frame Number", info='0:00:00', step=1.0, interactive=True)
+                    preview_frame_num = gr.Slider(1, 1, value=1, label="Frame Number", info='0:00:00', step=1.0, interactive=True,
+                                                   elem_id="preview_frame_num")
                 with gr.Row():
                     text_frame_clip = gr.Markdown('Processing frame range [0 - 0]')
                     set_frame_start = gr.Button("⬅ Set as Start", size='sm')
@@ -244,7 +263,7 @@ def faceswap_tab():
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, mask_json_store, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale,
-                        chk_use_3d_recon]
+                        chk_use_3d_recon, mask_per_frame_store]
     previewoutputs = [previewimage, preview_frame_num, original_frame_img]
     input_faces.select(on_select_input_face, None, None).success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     
@@ -284,7 +303,7 @@ def faceswap_tab():
     start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, mask_json_store,
-                    chk_use_3d_recon],
+                    chk_use_3d_recon, mask_per_frame_store],
         outputs=[bt_start, bt_stop], show_progress='full')
 
     bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop], queue=False)
@@ -298,6 +317,66 @@ def faceswap_tab():
         outputs=[mask_face_crop_store, mask_face_swap_crop_store],
         show_progress='hidden'
     ).then(fn=None, js="() => maskToggle()")
+    # FBF in-modal frame navigation: JS writes "frameNum:seq" to fbf_frame_num_store.
+    # gr.Files components are not reliably serialized in .change() events in Gradio 5
+    # (they arrive as None), so we bypass bt_destfiles entirely and use
+    # roop.globals.target_path which is already set when the user loaded their target.
+    def _fbf_fetch_crop(frame_num_str):
+        global _last_swapped_preview
+        # frame_num_str format: "N:seq" — take only the part before ":"
+        part = (frame_num_str or "1").split(":")[0]
+        frame_num = int(float(part)) if part else 1
+        # Use list_files_process / selected_preview_index — same globals the
+        # preview system uses; roop.globals.target_path is only set by
+        # on_use_face_from_selected and is None during normal preview use.
+        if not list_files_process or selected_preview_index >= len(list_files_process):
+            print(f"[FBF] no files loaded (list_files_process={list_files_process!r})")
+            return "", ""
+        filename = list_files_process[selected_preview_index].filename
+        print(f"[FBF] frame_num={frame_num}  filename={filename!r}")
+
+        # Shim: get_face_crop_for_mask expects files[idx].name
+        class _F:
+            def __init__(self, p):
+                self.name = p
+
+        # When fake_preview was active, regenerate the swap for this specific
+        # FBF frame using the stored ProcessOptions.  We temporarily patch
+        # _last_swapped_preview so get_face_crop_for_mask picks up the correct
+        # swap; the original is always restored afterward.
+        # util == roop.utilities (module-level alias)
+        saved_swap = _last_swapped_preview
+        if _last_preview_options is not None:
+            try:
+                from roop.core import live_swap as _live_swap
+                if util.is_video(filename) or filename.lower().endswith('gif') or util.is_animated_webp(filename):
+                    raw_frame = get_video_frame(filename, frame_num)
+                else:
+                    raw_frame = get_image_frame(filename)
+                if raw_frame is not None:
+                    swapped = _live_swap(raw_frame.copy(), _last_preview_options)
+                    _last_swapped_preview = swapped  # may be None on failure
+                    print(f"[FBF] live_swap for frame {frame_num}: {'ok' if swapped is not None else 'failed'}")
+            except Exception as _e:
+                print(f"[FBF] swap preview failed: {_e}")
+
+        result = get_face_crop_for_mask(frame_num, [_F(filename)])
+
+        # Restore so the main-preview cache is unchanged.
+        _last_swapped_preview = saved_swap
+
+        print(f"[FBF] result: src_len={len(result[0])}  swp_len={len(result[1])}")
+        return result
+    fbf_frame_num_store.change(
+        fn=_fbf_fetch_crop,
+        inputs=[fbf_frame_num_store],
+        outputs=[mask_face_crop_store, mask_face_swap_crop_store],
+        show_progress='hidden',
+    ).then(fn=None, js="""() => {
+      console.log('[FBF] .then fired — reading from DOM stores');
+      if (window._fbfOnCropReady) window._fbfOnCropReady();
+      else console.warn('[FBF] _fbfOnCropReady is null');
+    }""")
     fake_preview.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     preview_frame_num.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
 
@@ -596,33 +675,46 @@ def get_face_crop_for_mask(frame_num, files):
         x1 = min(frame.shape[1], int(x1)); y1 = min(frame.shape[0], int(y1))
         return frame[y0:y1, x0:x1]
 
-    def _encode(frame):
-        """Return a base64 PNG data-URL for the canonical face crop of *frame*,
-        applying the same autorotation pre-processing that process_face uses."""
+    def _get_aligned_crop_params(frame):
+        """Detect face in *frame*, apply autorotation, return (aligned_frame, kps, swap_fn).
+
+        Returns (None, None, None) if no usable face is found.
+
+        swap_fn is a closure that applies the EXACT same spatial transform
+        (cutout + rotation, or identity) to any other frame so its coordinate
+        space matches aligned_frame.  This guarantees src_kps are valid for both
+        the source and the swap crops without any independent recomputation."""
         if frame is None:
-            return ""
+            return None, None, None
         face = get_first_face(frame)
         if face is None or not hasattr(face, 'kps') or face.kps is None:
-            return ""
-
-        # Replicate the autorotate cutout+rotate that process_face does so that
-        # the canonical crop shown in the editor matches what the processor sees.
+            return None, None, None
         if roop.globals.autorotate_faces:
             action = _rotation_action(face, frame)
             if action is not None:
                 x0, y0, x1, y1 = face.bbox.astype(int)
                 offs = int(max(x1 - x0, y1 - y0) * 0.25)
                 cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
-                if action == "rotate_anticlockwise":
-                    cut = rotate_anticlockwise(cut)
-                else:
-                    cut = rotate_clockwise(cut)
-                rotface = get_first_face(cut)
+                rot = rotate_anticlockwise(cut) if action == "rotate_anticlockwise" else rotate_clockwise(cut)
+                rotface = get_first_face(rot)
                 if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
-                    face  = rotface
-                    frame = cut
+                    # Capture loop variables explicitly so the closure is correct.
+                    _x0, _y0, _x1, _y1, _offs, _act = x0, y0, x1, y1, offs, action
+                    def _swap_fn(swp, __x0=_x0, __y0=_y0, __x1=_x1, __y1=_y1,
+                                 __offs=_offs, __act=_act):
+                        c = _cutout(swp, __x0 - __offs, __y0 - __offs,
+                                        __x1 + __offs, __y1 + __offs)
+                        return rotate_anticlockwise(c) if __act == "rotate_anticlockwise" \
+                               else rotate_clockwise(c)
+                    return rot, rotface.kps, _swap_fn
+        # No rotation — identity transform for the swap frame too.
+        return frame, face.kps, lambda swp: swp
 
-        crop, _ = align_crop(frame, face.kps, 512)
+    def _crop_with_kps(frame, kps):
+        """Return a base64 PNG data-URL for align_crop(frame, kps, 512)."""
+        if frame is None or kps is None:
+            return ""
+        crop, _ = align_crop(frame, kps, 512)
         ok, buf = _cv2.imencode('.png', crop)
         if not ok:
             return ""
@@ -636,22 +728,45 @@ def get_face_crop_for_mask(frame_num, files):
         current_frame = get_video_frame(filename, frame_num)
     else:
         current_frame = get_image_frame(filename)
-    src_url = _encode(current_frame)
 
-    # --- Swapped face crop (from the last generated swap preview, if any) ---
-    # _last_swapped_preview is set by on_preview_frame_changed when fake_preview
-    # is active; it holds the BGR numpy frame without going through Gradio inputs.
-    swp_url = _encode(_last_swapped_preview) if _last_swapped_preview is not None else ""
+    # Detect the face ONCE.  swap_fn applies the identical spatial transform to
+    # any other frame so src_kps remain valid for the swap crop without
+    # independently recomputing the rotation (which caused mismatches when face
+    # re-detection failed in the rotated cutout).
+    src_aligned, src_kps, swap_fn = _get_aligned_crop_params(current_frame)
+    src_url = _crop_with_kps(src_aligned, src_kps)
+
+    # --- Swapped face crop ---
+    # CRITICAL: use the same keypoints from the source face to crop the swap frame.
+    # Re-detecting the face on the swap frame gives slightly different kps because
+    # the inserted face is not pixel-identical to the source, which shifts the
+    # canonical crop and misaligns the painted mask.
+    swp_url = ""
+    if _last_swapped_preview is not None and src_kps is not None and swap_fn is not None:
+        swap_aligned = swap_fn(_last_swapped_preview)
+        swp_url = _crop_with_kps(swap_aligned, src_kps)
 
     return src_url, swp_url
 
 
 def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection, face_distance, blend_ratio,
                               selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
-                              use_3d_recon=False):
-    global SELECTED_INPUT_FACE_INDEX, current_video_fps, _last_swapped_preview
+                              use_3d_recon=False, mask_per_frame_json=""):
+    global SELECTED_INPUT_FACE_INDEX, current_video_fps, _last_swapped_preview, _last_preview_options
 
     from roop.core import live_swap, get_processing_plugins
+
+    # If there is a per-frame mask for this specific frame, use it instead of
+    # (or in addition to) the global mask_json.  Per-frame masks take priority.
+    if mask_per_frame_json:
+        import json as _json
+        try:
+            _pfm = _json.loads(mask_per_frame_json)
+            _key = str(int(frame_num)) if frame_num is not None else None
+            if _key and _key in _pfm:
+                mask_json = _json.dumps(_pfm[_key])
+        except Exception:
+            pass
 
     mask_offsets = [
         roop.globals.CFG.mask_top,
@@ -699,6 +814,7 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
 
     if not fake_preview or len(roop.globals.INPUT_FACESETS) < 1:
         _last_swapped_preview = None
+        _last_preview_options = None
         return (gr.Image(value=original_frame, visible=True),
                 gr.Slider(info=timeinfo),
                 gr.Image(value=original_frame, visible=True))
@@ -722,6 +838,8 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     options = ProcessOptions(get_processing_plugins(mask_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
                               roop.globals.face_swap_mode, face_index, clip_text, mask_json or None, num_steps, roop.globals.subsample_size, show_face_area, restore_original_mouth,
                               use_3d_recon=use_3d_recon)
+    # Store so FBF frame navigation can regenerate swap previews for arbitrary frames.
+    _last_preview_options = options
 
     current_frame = live_swap(current_frame, options)
     if current_frame is None:
@@ -757,15 +875,37 @@ MASKING_HEAD_JS = """
   'use strict';
 
   /* ── Per-modal state (reset each open) ────────────────────────────── */
-  var _mode = 'include', _brush = 20, _painting = false, _lx = 0, _ly = 0;
+  var _mode = 'exclude', _brush = 20, _painting = false, _lx = 0, _ly = 0;
   var _zoom = 1.0, _panX = 0, _panY = 0;
   var _panning = false, _panSX = 0, _panSY = 0, _panOX = 0, _panOY = 0;
   var _bgImage = null, _swappedImage = null, _prevRafPending = false;
   var _pendingMaskJson = null;   /* mask JSON waiting to be restored once canvases are sized */
+  var _targetStoreId = 'mask_json_store';  /* Gradio element ID that maskApply writes to */
+
+  /* ── Frame-by-frame mode state ────────────────────────────────────── */
+  var _fbfMode = false;           /* frame-by-frame mode enabled */
+  var _fbfFrame = 1;              /* 1-based index of the frame currently being edited */
+  var _fbfTotal = 1;              /* total frames (read from preview_frame_num slider max) */
+  /* Per-frame mask storage: { "1": {include, exclude}, "5": {include, exclude}, ... }
+     Keys are string frame numbers.  Only frames that have been explicitly saved appear.
+     Serialised to mask_per_frame_store on Apply & Close. */
+  var _fbfMasks = {};
+  var _fbfFetchSeq = 0;  /* incremented on every fetch; lets callback detect stale responses */
+
   /* ── Public: called by the Gradio button click (fn=None, js="...") ── */
   window.maskToggle = function() {
     var modal = document.getElementById('roop-mask-modal');
-    if (modal) { _closeModal(false); } else { _openModal(); }
+    if (modal) { _closeModal(false); } else { _targetStoreId = 'mask_json_store'; _openModal(); }
+  };
+
+  /* ── Public: Frame Editor variant — uses per-frame crop stores, skips preview gate ── */
+  window.maskToggleFrameEditor = function() {
+    var modal = document.getElementById('roop-mask-modal');
+    if (modal) { _closeModal(false); return; }
+    _targetStoreId = 'fe_mask_json_store';
+    var cropEl = document.querySelector('#fe_mask_face_crop_store textarea, #fe_mask_face_crop_store input');
+    var swapEl = document.querySelector('#fe_mask_face_swap_crop_store textarea, #fe_mask_face_swap_crop_store input');
+    _openModal(cropEl ? cropEl.value : '', swapEl ? swapEl.value : '', true);
   };
 
   /* ── Public: called when target media is removed — closes modal if open
@@ -779,41 +919,64 @@ MASKING_HEAD_JS = """
     }
     _bgImage = null; _swappedImage = null;
     _pendingMaskJson = null;
+    _fbfMode = false; _fbfFrame = 1; _fbfTotal = 1; _fbfMasks = {};
   };
 
   /* ── Open ─────────────────────────────────────────────────────────── */
-  function _openModal() {
-    _mode = 'include'; _brush = 20; _painting = false;
+  /* faceCropUrlArg, swpCropUrlArg, skipGateCheck are used by maskToggleFrameEditor
+     to pass pre-loaded image URLs and bypass the faceswap-tab DOM lookups. */
+  function _openModal(faceCropUrlArg, swpCropUrlArg, skipGateCheck) {
+    _mode = 'exclude'; _brush = 20; _painting = false;
     _zoom = 1.0; _panX = 0; _panY = 0; _panning = false;
     _prevRafPending = false;
-
-    var wrap = document.getElementById('roop_preview_image');
-    var previewImg = wrap ? wrap.querySelector('img') : null;
-    if (!previewImg || !previewImg.src || previewImg.naturalWidth === 0) {
-      alert('Please generate a preview first before editing the mask.');
-      return;
+    /* Initialise / preserve frame-by-frame state across re-opens.
+       _fbfMasks persists across opens so saved per-frame masks are not lost. */
+    _fbfMode = false;
+    _fbfFrame = 1;
+    /* Read total frames from the Gradio preview_frame_num slider */
+    var sliderWrap = document.getElementById('preview_frame_num');
+    var sliderEl   = sliderWrap ? sliderWrap.querySelector('input[type="range"]') : null;
+    _fbfTotal = sliderEl ? Math.max(1, parseInt(sliderEl.max, 10) || 1) : 1;
+    if (sliderEl) {
+      var cur = parseInt(sliderEl.value, 10) || 1;
+      _fbfFrame = Math.max(1, Math.min(_fbfTotal, cur));
     }
-    /* swappedUrl = the current Gradio preview (face-swapped result).
-       Used in the live preview panel as the base image. */
-    var swappedUrl = previewImg.src;
 
-    /* faceCropUrl = the canonical 512×512 face crop produced by Python's align_crop.
-       The mask is painted in this coordinate system, so it always tracks the face
-       perfectly through any head motion without needing any affine warp.
-       Falls back to origUrl (full frame) if the crop isn't available yet. */
-    var origWrap  = document.getElementById('roop_original_frame');
-    var origImgEl = origWrap ? origWrap.querySelector('img') : null;
-    var origUrl   = (origImgEl && origImgEl.naturalWidth > 0) ? origImgEl.src : swappedUrl;
+    var faceCropUrl, swpCropUrl;
 
-    var cropStoreEl = document.querySelector('#mask_face_crop_store textarea, #mask_face_crop_store input');
-    var faceCropDataUrl = cropStoreEl ? cropStoreEl.value : '';
-    var faceCropUrl = (faceCropDataUrl && faceCropDataUrl.startsWith('data:image')) ? faceCropDataUrl : origUrl;
+    if (!skipGateCheck) {
+      var wrap = document.getElementById('roop_preview_image');
+      var previewImg = wrap ? wrap.querySelector('img') : null;
+      if (!previewImg || !previewImg.src || previewImg.naturalWidth === 0) {
+        alert('Please generate a preview first before editing the mask.');
+        return;
+      }
+      /* swappedUrl = the current Gradio preview (face-swapped result).
+         Used in the live preview panel as the base image. */
+      var swappedUrl = previewImg.src;
 
-    var swpCropStoreEl = document.querySelector('#mask_face_swap_crop_store textarea, #mask_face_swap_crop_store input');
-    var swpCropDataUrl = swpCropStoreEl ? swpCropStoreEl.value : '';
-    /* Live-preview base: swapped face crop when available, else source face crop.
-       Falls back to origUrl only when no face crop was detected at all. */
-    var swpCropUrl = (swpCropDataUrl && swpCropDataUrl.startsWith('data:image')) ? swpCropDataUrl : faceCropUrl;
+      /* faceCropUrl = the canonical 512×512 face crop produced by Python's align_crop.
+         The mask is painted in this coordinate system, so it always tracks the face
+         perfectly through any head motion without needing any affine warp.
+         Falls back to origUrl (full frame) if the crop isn't available yet. */
+      var origWrap  = document.getElementById('roop_original_frame');
+      var origImgEl = origWrap ? origWrap.querySelector('img') : null;
+      var origUrl   = (origImgEl && origImgEl.naturalWidth > 0) ? origImgEl.src : swappedUrl;
+
+      var cropStoreEl = document.querySelector('#mask_face_crop_store textarea, #mask_face_crop_store input');
+      var faceCropDataUrl = cropStoreEl ? cropStoreEl.value : '';
+      faceCropUrl = (faceCropDataUrl && faceCropDataUrl.startsWith('data:image')) ? faceCropDataUrl : origUrl;
+
+      var swpCropStoreEl = document.querySelector('#mask_face_swap_crop_store textarea, #mask_face_swap_crop_store input');
+      var swpCropDataUrl = swpCropStoreEl ? swpCropStoreEl.value : '';
+      /* Live-preview base: swapped face crop when available, else source face crop.
+         Falls back to origUrl only when no face crop was detected at all. */
+      swpCropUrl = (swpCropDataUrl && swpCropDataUrl.startsWith('data:image')) ? swpCropDataUrl : faceCropUrl;
+    } else {
+      /* Frame Editor path: caller provides the image URLs directly. */
+      faceCropUrl = faceCropUrlArg || '';
+      swpCropUrl  = swpCropUrlArg  || faceCropUrlArg || '';
+    }
 
     /* _bgImage = source face crop — the editor drawing surface.
        Painting on this ensures the mask is in canonical face-crop coordinates. */
@@ -828,7 +991,7 @@ MASKING_HEAD_JS = """
     _swappedImage.onload = function() { _schedulePreview(); };
     _swappedImage.src = swpCropUrl;
 
-    var storeEl = document.querySelector('#mask_json_store textarea, #mask_json_store input');
+    var storeEl = document.querySelector('#' + _targetStoreId + ' textarea, #' + _targetStoreId + ' input');
     var existJson = storeEl ? storeEl.value : '';
 
     /* Build modal DOM ─────────────────────────────────────────────── */
@@ -847,8 +1010,7 @@ MASKING_HEAD_JS = """
     panel.innerHTML = [
       /* ── Toolbar ── */
       '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex-shrink:0;">',
-        '<button id="mask-btn-include" style="background:#1a3d2a;border:2px solid #4CAF50;color:#4CAF50;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">&#x1F7E2; Include</button>',
-        '<button id="mask-btn-exclude" style="background:#1c1c1c;border:2px solid #383838;color:#999;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">&#x1F534; Exclude</button>',
+        '<button id="mask-btn-exclude" style="background:#3d1a1a;border:2px solid #f44336;color:#f44336;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">&#x1F534; Exclude</button>',
         '<button id="mask-btn-erase"   style="background:#1c1c1c;border:2px solid #383838;color:#999;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">&#x2B1C; Erase</button>',
         '<div style="width:1px;background:#383838;height:28px;margin:0 4px;"></div>',
         '<span style="color:#999;font-size:12px;">Brush:</span>',
@@ -866,11 +1028,52 @@ MASKING_HEAD_JS = """
       '</div>',
       /* ── Legend row ── */
       '<div style="display:flex;gap:14px;font-size:11px;color:#888;flex-wrap:wrap;flex-shrink:0;align-items:center;">',
-        '<span><span style="color:#4CAF50;font-size:14px;">&#x25A0;</span> Include &mdash; force swap</span>',
         '<span><span style="color:#f44336;font-size:14px;">&#x25A0;</span> Exclude &mdash; keep original</span>',
         '<span><span style="color:#aaa;font-size:14px;">&#x25A0;</span> Erase</span>',
         '<span style="color:#f0c040;font-size:11px;background:#2a2000;border:1px solid #5a4000;border-radius:4px;padding:2px 6px;">&#x26A0; Requires &ldquo;Face swap frames&rdquo; for preview</span>',
         '<span style="color:#555;font-size:11px;margin-left:auto;">Scroll=zoom &nbsp;|&nbsp; Middle-drag=pan &nbsp;|&nbsp; [Esc]=discard</span>',
+      '</div>',
+      /* ── Frame-by-frame mode row (hidden by default, shown when FBF toggle active) ── */
+      '<div id="mask-fbf-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex-shrink:0;',
+           'background:#181c24;border:1px solid #2a4060;border-radius:8px;padding:6px 12px;">',
+        /* Toggle button */
+        '<button id="mask-fbf-toggle" style="background:#1a2a40;border:1px solid #3a6090;color:#80b0e0;',
+                'padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">',
+          '&#x1F4FD; Frame-by-Frame: OFF',
+        '</button>',
+        '<div style="width:1px;background:#2a4060;height:24px;margin:0 4px;"></div>',
+        /* Frame navigation — visible only when FBF is on */
+        '<span id="mask-fbf-nav" style="display:none;gap:8px;align-items:center;">',
+          '<button id="mask-fbf-prev" style="background:#242424;border:1px solid #444;color:#ccc;',
+                  'padding:3px 10px;border-radius:5px;cursor:pointer;font-size:14px;">&#x25C4;</button>',
+          '<span style="color:#aaa;font-size:12px;">Frame</span>',
+          '<input id="mask-fbf-num" type="number" min="1" value="1"',
+                 'style="width:58px;background:#111;border:1px solid #444;color:#eee;',
+                        'border-radius:5px;padding:3px 6px;font-size:13px;text-align:center;">',
+          '<span id="mask-fbf-total" style="color:#666;font-size:12px;">/ 1</span>',
+          '<button id="mask-fbf-next" style="background:#242424;border:1px solid #444;color:#ccc;',
+                  'padding:3px 10px;border-radius:5px;cursor:pointer;font-size:14px;">&#x25BA;</button>',
+          '<div style="width:1px;background:#2a4060;height:24px;margin:0 4px;"></div>',
+          '<button id="mask-fbf-save" style="background:#1a3d2a;border:1px solid #4CAF50;color:#4CAF50;',
+                  'padding:4px 12px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600;">',
+            '&#x1F4BE; Save for frame',
+          '</button>',
+          '<button id="mask-fbf-clear-frame" style="background:#2c1010;border:1px solid #7a2020;color:#f08080;',
+                  'padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;">',
+            '&#x1F5D1; Clear frame',
+          '</button>',
+          '<div style="width:1px;background:#2a4060;height:24px;margin:0 4px;"></div>',
+          '<input id="mask-fbf-range" type="text" placeholder="Also apply to frames: 1,5,10-20"',
+                 'style="width:200px;background:#111;border:1px solid #444;color:#eee;',
+                        'border-radius:5px;padding:3px 8px;font-size:12px;" title="Comma-separated frames or ranges, e.g. 1,3,5-10">',
+          '<button id="mask-fbf-apply-range" style="background:#242424;border:1px solid #5a4000;color:#f0c040;',
+                  'padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;" title="Apply the current canvas to all specified frames">',
+            '&#x2192; Apply to range',
+          '</button>',
+        '</span>',
+        '<div style="flex:1;"></div>',
+        /* Saved frames indicator */
+        '<span id="mask-fbf-saved-lbl" style="color:#60a0d0;font-size:11px;font-style:italic;display:none;"></span>',
       '</div>',
       /* ── Two-column content area ── */
       '<div style="display:flex;gap:10px;flex:1;min-height:0;overflow:hidden;">',
@@ -899,7 +1102,6 @@ MASKING_HEAD_JS = """
     document.body.appendChild(modal);
 
     /* Wire toolbar buttons */
-    document.getElementById('mask-btn-include').addEventListener('click', function() { _setMode('include'); });
     document.getElementById('mask-btn-exclude').addEventListener('click', function() { _setMode('exclude'); });
     document.getElementById('mask-btn-erase').addEventListener('click',   function() { _setMode('erase'); });
     document.getElementById('mask-btn-clear').addEventListener('click',   function() { _clearAll(); });
@@ -909,6 +1111,23 @@ MASKING_HEAD_JS = """
     document.getElementById('mask-btn-zoom-in').addEventListener('click',  function() { _zoomBy(1.25); });
     document.getElementById('mask-btn-zoom-out').addEventListener('click', function() { _zoomBy(0.8); });
     document.getElementById('mask-btn-zoom-rst').addEventListener('click', function() { _resetZoom(); });
+
+    /* ── Frame-by-frame controls ── */
+    document.getElementById('mask-fbf-toggle').addEventListener('click', _fbfToggle);
+    document.getElementById('mask-fbf-prev').addEventListener('click',   function() { _fbfGoTo(_fbfFrame - 1); });
+    document.getElementById('mask-fbf-next').addEventListener('click',   function() { _fbfGoTo(_fbfFrame + 1); });
+    document.getElementById('mask-fbf-save').addEventListener('click',   _fbfSaveFrame);
+    document.getElementById('mask-fbf-clear-frame').addEventListener('click', _fbfClearFrame);
+    document.getElementById('mask-fbf-apply-range').addEventListener('click', _fbfApplyRange);
+    document.getElementById('mask-fbf-num').addEventListener('change', function() {
+      var n = parseInt(this.value, 10);
+      if (!isNaN(n)) _fbfGoTo(n);
+    });
+    /* Update total-frame label now that we know _fbfTotal */
+    var totalLbl = document.getElementById('mask-fbf-total');
+    if (totalLbl) totalLbl.textContent = '/ ' + _fbfTotal;
+    var numInput = document.getElementById('mask-fbf-num');
+    if (numInput) { numInput.max = _fbfTotal; numInput.value = _fbfFrame; }
 
     /* Wire outer container events (draw + zoom + pan) */
     var outer = document.getElementById('mask-outer');
@@ -1109,11 +1328,11 @@ MASKING_HEAD_JS = """
   /* ── Drawing helpers ──────────────────────────────────────────────── */
   function _setMode(m) {
     _mode = m;
-    ['include', 'exclude', 'erase'].forEach(function(mm) {
+    ['exclude', 'erase'].forEach(function(mm) {
       var b = document.getElementById('mask-btn-' + mm); if (!b) return;
       if (mm === m) {
-        var col = mm === 'include' ? '#4CAF50' : mm === 'exclude' ? '#f44336' : '#cccccc';
-        var bg  = mm === 'include' ? '#1a3d2a' : mm === 'exclude' ? '#3d1a1a' : '#2c2c2c';
+        var col = mm === 'exclude' ? '#f44336' : '#cccccc';
+        var bg  = mm === 'exclude' ? '#3d1a1a' : '#2c2c2c';
         b.style.borderColor = col; b.style.color = col; b.style.background = bg;
       } else {
         b.style.borderColor = '#383838'; b.style.color = '#999'; b.style.background = '#1c1c1c';
@@ -1131,7 +1350,7 @@ MASKING_HEAD_JS = """
     var c = document.getElementById('mask-cvs-cur'); if (!c || !c.width) return;
     var ctx = c.getContext('2d');
     ctx.clearRect(0, 0, c.width, c.height);
-    var col = _mode === 'include' ? '#4CAF50' : _mode === 'exclude' ? '#f44336' : '#ffffff';
+    var col = _mode === 'exclude' ? '#f44336' : '#ffffff';
     ctx.beginPath(); ctx.arc(x, y, Math.max(_brush / 2, 2), 0, Math.PI * 2);
     ctx.strokeStyle = col; ctx.lineWidth = 2 / _zoom; ctx.stroke();
     ctx.beginPath(); ctx.arc(x, y, 2 / _zoom, 0, Math.PI * 2);
@@ -1149,14 +1368,12 @@ MASKING_HEAD_JS = """
       _eraseOn('mask-cvs-inc', x1, y1, x2, y2);
       return;
     }
-    var tid = _mode === 'include' ? 'mask-cvs-inc' : 'mask-cvs-exc';
-    var c = document.getElementById(tid); if (!c || !c.width) return;
+    var c = document.getElementById('mask-cvs-exc'); if (!c || !c.width) return;
     var ctx = c.getContext('2d');
     ctx.globalCompositeOperation = 'source-over';
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = _brush;
-    ctx.strokeStyle = _mode === 'include' ? 'rgba(76,175,80,0.65)' : 'rgba(244,67,54,0.65)';
+    ctx.strokeStyle = 'rgba(244,67,54,0.65)';
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-    _eraseOn(_mode === 'include' ? 'mask-cvs-exc' : 'mask-cvs-inc', x1, y1, x2, y2);
   }
 
   function _eraseOn(cid, x1, y1, x2, y2) {
@@ -1216,9 +1433,8 @@ MASKING_HEAD_JS = """
       ctx.drawImage(tmp, 0, 0);                           /* stamp over swapped base */
     }
 
-    /* Note: Include areas already show the swapped result from step 1.
-       The include brush overrides other mask engines — the swapped face
-       already shows through, which is the correct live approximation. */
+    /* Note: Areas with no exclude paint show the swapped result from step 1.
+       Only excluded regions show the original face. */
   }
 
   /* ── Mask serialisation ───────────────────────────────────────────── */
@@ -1298,8 +1514,205 @@ MASKING_HEAD_JS = """
     } catch(e) {}
   }
 
-  function _writeToStore(jstr) {
-    var wrap = document.querySelector('#mask_json_store');
+  /* ── Frame-by-frame helpers ───────────────────────────────────────── */
+
+  function _fbfUpdateSavedLabel() {
+    var lbl = document.getElementById('mask-fbf-saved-lbl');
+    if (!lbl) return;
+    var keys = Object.keys(_fbfMasks);
+    if (keys.length === 0) {
+      lbl.textContent = '';
+      lbl.style.display = 'none';
+    } else {
+      /* Show compact sorted list, collapsing runs into ranges */
+      var nums = keys.map(Number).sort(function(a,b){return a-b;});
+      var parts = [], i = 0;
+      while (i < nums.length) {
+        var start = nums[i], end = start;
+        while (i + 1 < nums.length && nums[i+1] === nums[i] + 1) { i++; end = nums[i]; }
+        parts.push(end > start ? start + '–' + end : String(start));
+        i++;
+      }
+      lbl.textContent = '✔ Custom masks: frames ' + parts.join(', ');
+      lbl.style.display = 'inline';
+    }
+  }
+
+  function _fbfToggle() {
+    _fbfMode = !_fbfMode;
+    var btn = document.getElementById('mask-fbf-toggle');
+    var nav = document.getElementById('mask-fbf-nav');
+    if (_fbfMode) {
+      if (btn) { btn.textContent = '📽 Frame-by-Frame: ON'; btn.style.background = '#1a3060'; btn.style.borderColor = '#4080c0'; btn.style.color = '#80c0ff'; }
+      if (nav) nav.style.display = 'inline-flex';
+      _fbfUpdateSavedLabel();
+    } else {
+      if (btn) { btn.textContent = '📽 Frame-by-Frame: OFF'; btn.style.background = '#1a2a40'; btn.style.borderColor = '#3a6090'; btn.style.color = '#80b0e0'; }
+      if (nav) nav.style.display = 'none';
+    }
+  }
+
+  function _fbfSnapshotCanvas() {
+    /* Capture the current canvas state as {include, exclude} PNG data-URLs */
+    var excC = document.getElementById('mask-cvs-exc');
+    var incC = document.getElementById('mask-cvs-inc');
+    var snap = {};
+    if (!_isBlank(excC)) snap.exclude = _toGray(excC);
+    if (!_isBlank(incC)) snap.include = _toGray(incC);
+    snap.canonical = true;
+    return snap;
+  }
+
+  function _fbfRestoreCanvas(snap) {
+    _clearAll();
+    if (!snap) return;
+    /* Reuse _restoreMask's loadLayer logic — it handles the grayscale→paint decode */
+    _restoreMask(JSON.stringify(snap));
+  }
+
+  function _fbfGoTo(n) {
+    n = Math.max(1, Math.min(_fbfTotal, n));
+    if (n === _fbfFrame && _fbfMode) {
+      /* Same frame — just sync the input */
+      var inp = document.getElementById('mask-fbf-num');
+      if (inp) inp.value = n;
+      return;
+    }
+    _fbfFrame = n;
+    var inp = document.getElementById('mask-fbf-num');
+    if (inp) inp.value = n;
+    /* Load saved mask for the destination frame (instant, no server round-trip) */
+    var key = String(n);
+    _fbfRestoreCanvas(_fbfMasks[key] || null);
+    _fbfUpdateSavedLabel();
+    /* Fetch the face crop for this frame from Python and update the editor background */
+    _fbfFetchFaceCrop(n);
+  }
+
+  function _fbfSaveFrame() {
+    var key = String(_fbfFrame);
+    _fbfMasks[key] = _fbfSnapshotCanvas();
+    _fbfUpdateSavedLabel();
+    /* Flash the save button green briefly */
+    var btn = document.getElementById('mask-fbf-save');
+    if (btn) {
+      var orig = btn.style.background;
+      btn.style.background = '#0a5a28';
+      setTimeout(function() { if (btn) btn.style.background = orig; }, 500);
+    }
+  }
+
+  function _fbfClearFrame() {
+    var key = String(_fbfFrame);
+    delete _fbfMasks[key];
+    _clearAll();
+    _fbfUpdateSavedLabel();
+  }
+
+  function _fbfParseRange(str) {
+    /* Parse "1,3,5-10,20" into an array of frame numbers */
+    var result = [];
+    (str || '').split(',').forEach(function(part) {
+      part = part.trim();
+      var m = part.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+      if (m) {
+        var lo = parseInt(m[1], 10), hi = parseInt(m[2], 10);
+        for (var i = lo; i <= hi; i++) result.push(i);
+      } else {
+        var n = parseInt(part, 10);
+        if (!isNaN(n)) result.push(n);
+      }
+    });
+    return result;
+  }
+
+  function _fbfApplyRange() {
+    var input = document.getElementById('mask-fbf-range');
+    var rangeStr = input ? input.value : '';
+    if (!rangeStr.trim()) { alert('Enter frame numbers or ranges, e.g. 1,5,10-20'); return; }
+    var frames = _fbfParseRange(rangeStr);
+    if (frames.length === 0) { alert('No valid frame numbers found.'); return; }
+    var snap = _fbfSnapshotCanvas();
+    frames.forEach(function(n) {
+      if (n >= 1 && n <= _fbfTotal) _fbfMasks[String(n)] = JSON.parse(JSON.stringify(snap));
+    });
+    if (input) input.value = '';
+    _fbfUpdateSavedLabel();
+    alert('Mask applied to ' + frames.length + ' frame(s).');
+  }
+
+  /* ── FBF face-crop refresh ────────────────────────────────────────── */
+  /* Called each time the user navigates to a new frame in FBF mode.
+     Writes "frameNum:seq" to fbf_frame_num_store.  The ":seq" suffix ensures
+     the value always changes (Gradio's .change() won't fire if the value is
+     identical to the previous write, e.g. navigating back to the same frame).
+     _writeToDedicatedStore dispatches an input event which Svelte picks up and
+     propagates to Gradio's .change() handler → Python → .then() → _fbfOnCropReady.
+     No hidden button required. */
+  function _fbfFetchFaceCrop(frameNum) {
+    var modal = document.getElementById('roop-mask-modal');
+    if (!modal) return;
+
+    /* Increment sequence counter so any prior in-flight callback knows it's stale */
+    var seq = ++_fbfFetchSeq;
+
+    /* Show a loading indicator */
+    var bgImg = document.getElementById('mask-bg-img');
+    if (bgImg) {
+      bgImg.style.opacity = '0.4';
+      bgImg.title = 'Loading frame ' + frameNum + '…';
+    }
+
+    /* One-shot callback — Gradio 5's .then(fn=None, js=...) does NOT pass Python
+       return values as JS arguments, so we read them directly from the DOM stores
+       that Gradio has already updated by the time .then() fires. */
+    window._fbfOnCropReady = function() {
+      if (seq !== _fbfFetchSeq) {
+        console.log('[FBF] _fbfOnCropReady stale seq', seq, '!==', _fbfFetchSeq, '— discarding');
+        return;
+      }
+      window._fbfOnCropReady = null;
+      /* Read the updated values straight from the DOM — Svelte has flushed by now */
+      var cropEl = document.querySelector('#mask_face_crop_store textarea, #mask_face_crop_store input');
+      var swapEl = document.querySelector('#mask_face_swap_crop_store textarea, #mask_face_swap_crop_store input');
+      var cropUrl = cropEl ? cropEl.value : '';
+      var swapUrl = swapEl ? swapEl.value : '';
+      console.log('[FBF] _fbfOnCropReady: DOM cropUrl len=', cropUrl.length, ' swapUrl len=', swapUrl.length);
+      if (bgImg) { bgImg.style.opacity = '1'; bgImg.title = ''; }
+      if (cropUrl && cropUrl.startsWith('data:image')) {
+        var swp = (swapUrl && swapUrl.startsWith('data:image')) ? swapUrl : cropUrl;
+        _fbfApplyNewCrops(cropUrl, swp, bgImg);
+      }
+    };
+
+    /* Write "frameNum:seq" — the colon-suffix guarantees the value changes every
+       call so Gradio's .change() always fires, even for repeated same-frame nav. */
+    console.log('[FBF] writing fbf_frame_num_store =', frameNum + ':' + seq);
+    _writeToDedicatedStore('fbf_frame_num_store', frameNum + ':' + seq);
+  }
+
+  function _fbfApplyNewCrops(faceCropUrl, swpCropUrl, bgImgEl) {
+    /* Update _bgImage and _swappedImage with the new face crops, then redraw. */
+    _bgImage = new Image();
+    _bgImage.onload = function() { _schedulePreview(); };
+    _bgImage.src = faceCropUrl;
+
+    _swappedImage = new Image();
+    _swappedImage.onload = function() { _schedulePreview(); };
+    _swappedImage.src = swpCropUrl;
+
+    /* Update the visible background in the editor */
+    if (bgImgEl) {
+      bgImgEl.style.opacity = '1';
+      bgImgEl.title = '';
+      /* Swap the src; the canvas stays the same size (512×512 face crops are consistent) */
+      bgImgEl.src = faceCropUrl;
+    }
+    _schedulePreview();
+  }
+
+  function _writeToDedicatedStore(elemId, jstr) {
+    var wrap = document.querySelector('#' + elemId);
     if (!wrap) return;
     var ta = wrap.querySelector('textarea') || wrap.querySelector('input[type="text"]');
     if (!ta) return;
@@ -1309,6 +1722,10 @@ MASKING_HEAD_JS = """
     } catch(ex) { ta.value = jstr; }
     ta.dispatchEvent(new Event('input',  { bubbles: true }));
     ta.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function _writeToStore(jstr) {
+    _writeToDedicatedStore(_targetStoreId, jstr);
   }
 
   /* ── Apply ────────────────────────────────────────────────────────── */
@@ -1321,17 +1738,33 @@ MASKING_HEAD_JS = """
     /* Mark as canonical: mask was painted on the face-crop background,
        so ProcessMgr can apply it directly without any affine warp. */
     result.canonical = true;
+
+    /* In frame-by-frame mode: auto-save the current canvas to the current frame,
+       then persist the full per-frame map to mask_per_frame_store.
+       The global mask_json_store is also written (holds the last painted canvas)
+       so single-frame or non-FBF previews continue to work. */
+    if (_fbfMode) {
+      _fbfMasks[String(_fbfFrame)] = _fbfSnapshotCanvas();
+      _writeToDedicatedStore('mask_per_frame_store', JSON.stringify(_fbfMasks));
+    }
+
+    var wasFrameEditor = (_targetStoreId === 'fe_mask_json_store');
     _writeToStore(JSON.stringify(result));
     _closeModal(false);
-    setTimeout(function() {
-      var wrap = document.getElementById('btn_refresh_preview');
-      var btn  = wrap ? wrap.querySelector('button') : null;
-      if (btn) btn.click();
-    }, 150);
+    /* Only auto-trigger the faceswap-tab refresh preview when NOT in Frame Editor mode.
+       In Frame Editor mode the mask is stored and applied only on compile. */
+    if (!wasFrameEditor) {
+      setTimeout(function() {
+        var wrap = document.getElementById('btn_refresh_preview');
+        var btn  = wrap ? wrap.querySelector('button') : null;
+        if (btn) btn.click();
+      }, 150);
+    }
   };
 
   /* ── Close ────────────────────────────────────────────────────────── */
   function _closeModal(_save) {
+    _targetStoreId = 'mask_json_store';  /* reset to default after every close */
     var m = document.getElementById('roop-mask-modal');
     if (m) m.remove();
     _bgImage = null; _swappedImage = null;
@@ -1413,7 +1846,7 @@ def translate_swap_mode(dropdown_text):
 
 def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
                 selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate, restore_original_mouth, num_swap_steps, upsample, mask_json,
-                use_3d_recon=False, progress=gr.Progress()):
+                use_3d_recon=False, mask_per_frame_json="", progress=gr.Progress()):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
     global is_processing, list_files_process
@@ -1457,7 +1890,8 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.globals.max_memory = roop.globals.CFG.memory_limit if roop.globals.CFG.memory_limit > 0 else None
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
-                          use_3d_recon=use_3d_recon)
+                          use_3d_recon=use_3d_recon,
+                          mask_per_frame_json=mask_per_frame_json or "")
     is_processing = False
     yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
 

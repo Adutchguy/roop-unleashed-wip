@@ -73,15 +73,8 @@ def create_video(target_path: str, dest_filename: str, fps: float = 24.0, temp_d
 
 
 def create_gif_from_video(video_path: str, gif_path):
-    from roop.capturer import get_video_frame, release_video
-
     fps = util.detect_fps(video_path)
-    frame = get_video_frame(video_path)
-    release_video()
-
-    # frame.shape is (height, width, channels); FFmpeg scale expects width:height
-    width  = frame.shape[1]
-    height = frame.shape[0]
+    width, height = util.detect_dimensions(video_path)
 
     # Keep the larger dimension at its original size; auto-scale the other.
     if width >= height:
@@ -253,6 +246,51 @@ def apply_media_transforms_webp(input_path: str, output_path: str,
     except Exception as e:
         print(f"apply_media_transforms_webp: subprocess failed: {e}")
         return False
+
+
+def create_video_from_frames_dir(frames_dir: str, output_path: str, fps: float,
+                                  image_format: str = 'png') -> bool:
+    """Re-assemble a video from a directory of sequentially named frame images.
+
+    Frames must follow the %06d.<image_format> naming convention that
+    extract_frames() produces (e.g. 000001.png, 000002.png …).
+    """
+    codec   = roop.globals.video_encoder   or 'libx264'
+    quality = roop.globals.video_quality   if roop.globals.video_quality is not None else 14
+    return run_ffmpeg([
+        '-r',    str(fps),
+        '-i',    os.path.join(frames_dir, f'%06d.{image_format}'),
+        '-c:v',  codec,
+        '-crf',  str(quality),
+        '-pix_fmt', 'yuv420p',
+        '-vf',   'colorspace=bt709:iall=bt601-6-625:fast=1',
+        '-y',    output_path,
+    ])
+
+
+def create_gif_from_frames_dir(frames_dir: str, output_path: str, fps: float,
+                                width: int, height: int,
+                                image_format: str = 'png') -> bool:
+    """Re-assemble an animated GIF from a directory of sequentially named frame images.
+
+    Uses the two-pass palettegen+paletteuse pipeline for accurate colour reproduction.
+    Frames must follow the %06d.<image_format> naming convention.
+    """
+    if width and height:
+        scale = f'{width}:-1' if width >= height else f'-1:{height}'
+    else:
+        scale = 'iw:ih'   # no-op scale if dimensions are unknown
+    vf = (
+        f'scale={scale}:flags=lanczos,'
+        f'split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
+    )
+    return run_ffmpeg([
+        '-r',   str(fps),
+        '-i',   os.path.join(frames_dir, f'%06d.{image_format}'),
+        '-vf',  vf,
+        '-loop', '0',
+        output_path,
+    ])
 
 
 def restore_audio(intermediate_video: str, original_video: str, trim_frame_start, trim_frame_end, final_video : str) -> None:

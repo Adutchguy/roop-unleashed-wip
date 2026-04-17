@@ -1,4 +1,5 @@
 import glob
+import json
 import mimetypes
 import os
 import platform
@@ -133,6 +134,24 @@ def get_temp_frame_paths(target_path: str) -> List[str]:
     )
 
 
+def get_temp_frame_paths_from_dir(directory: str) -> List[str]:
+    """Return sorted frame image paths from an arbitrary directory.
+
+    Used to get originals from _frames_orig/ for per-frame mask re-processing.
+    Tries the configured output_image_format first, then falls back to common formats.
+    """
+    if not directory or not os.path.isdir(directory):
+        return []
+    fmt = roop.globals.CFG.output_image_format
+    paths = sorted(glob.glob(os.path.join(glob.escape(directory), f'*.{fmt}')))
+    if not paths:
+        for fallback in ('png', 'jpg', 'jpeg'):
+            paths = sorted(glob.glob(os.path.join(glob.escape(directory), f'*.{fallback}')))
+            if paths:
+                break
+    return paths
+
+
 def get_temp_directory_path(target_path: str) -> str:
     target_name, _ = os.path.splitext(os.path.basename(target_path))
     target_directory_path = os.path.dirname(target_path)
@@ -203,6 +222,124 @@ def clean_temp(target_path: str) -> None:
 def delete_temp_frames(filename: str) -> None:
     dir = os.path.dirname(os.path.dirname(filename))
     shutil.rmtree(dir)
+
+
+def get_frames_output_path(target_path: str) -> str:
+    """Return the directory where extracted frames are saved when keep_frames is enabled.
+    Frames are placed in a <videoname>_frames sub-folder inside the configured output directory."""
+    target_name, _ = os.path.splitext(os.path.basename(target_path))
+    return os.path.join(roop.globals.output_path, f"{target_name}_frames")
+
+
+def move_frames_to_output(target_path: str, fps: float = 0.0) -> None:
+    """Move the extracted temp frames to a persistent sub-folder in the output directory.
+
+    When fps > 0 a meta.json sidecar is written inside the frames folder so the
+    Frame Editor tab can auto-populate FPS and image format without user input.
+    """
+    temp_dir = get_temp_directory_path(target_path)
+    frames_out_dir = get_frames_output_path(target_path)
+    if not os.path.isdir(temp_dir):
+        return
+    # Remove any stale frames folder from a previous run before moving
+    if os.path.isdir(frames_out_dir):
+        shutil.rmtree(frames_out_dir)
+    shutil.move(temp_dir, frames_out_dir)
+    # Write metadata sidecar for the Frame Editor
+    if fps > 0:
+        write_frames_metadata(
+            frames_out_dir,
+            fps=fps,
+            source_name=os.path.basename(target_path),
+            image_format=roop.globals.CFG.output_image_format,
+        )
+    # Clean up the now-empty parent temp directory if nothing else uses it
+    parent = os.path.dirname(temp_dir)
+    if os.path.exists(parent) and not os.listdir(parent):
+        os.rmdir(parent)
+
+
+def write_frames_metadata(frames_dir: str, fps: float, source_name: str, image_format: str) -> None:
+    """Write a meta.json sidecar inside *frames_dir* for use by the Frame Editor."""
+    meta = {"fps": fps, "source": os.path.basename(source_name), "image_format": image_format}
+    try:
+        with open(os.path.join(frames_dir, 'meta.json'), 'w') as fh:
+            json.dump(meta, fh)
+    except Exception as exc:
+        print(f"write_frames_metadata: {exc}")
+
+
+def read_frames_metadata(frames_dir: str) -> dict:
+    """Read meta.json from *frames_dir*; return empty dict if absent or corrupt."""
+    meta_path = os.path.join(frames_dir, 'meta.json')
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, 'r') as fh:
+                return json.load(fh)
+        except Exception:
+            pass
+    return {}
+
+
+def get_frames_orig_path(target_path: str) -> str:
+    """Return the directory where unswapped original frames are stored when keep_frames is enabled.
+    Stored alongside the processed frames as <videoname>_frames_orig/ in the output directory."""
+    target_name, _ = os.path.splitext(os.path.basename(target_path))
+    return os.path.join(roop.globals.output_path, f"{target_name}_frames_orig")
+
+
+def save_original_frames(target_path: str) -> None:
+    """Copy the extracted temp frames to a _frames_orig/ folder BEFORE run_batch overwrites them.
+
+    Called from core.py when keep_frames is True, so the Frame Editor always has
+    access to the unswapped source frames for per-frame reprocessing.
+    """
+    temp_dir = get_temp_directory_path(target_path)
+    frames_orig_dir = get_frames_orig_path(target_path)
+    if not os.path.isdir(temp_dir):
+        return
+    if os.path.isdir(frames_orig_dir):
+        shutil.rmtree(frames_orig_dir)
+    shutil.copytree(temp_dir, frames_orig_dir)
+
+
+def get_frame_mask_path(frames_orig_dir: str, frame_filename: str) -> str:
+    """Return the path for the per-frame mask JSON sidecar.
+
+    frame_filename is the basename of the frame image (e.g. '000001.png').
+    The sidecar is stored as '000001_mask.json' in the same _frames_orig/ directory.
+    """
+    base, _ = os.path.splitext(frame_filename)
+    return os.path.join(frames_orig_dir, f"{base}_mask.json")
+
+
+def save_frame_mask(frames_orig_dir: str, frame_filename: str, mask_data: dict) -> None:
+    """Persist per-frame mask settings to a JSON sidecar inside *frames_orig_dir*.
+
+    mask_data is a dict containing any combination of:
+      - slider keys: top, bottom, left, right, face_mask_blend,
+                     mouth_mask_blend, mouth_top, mouth_bottom,
+                     mouth_left, mouth_right (all floats)
+      - 'mask_json': the canvas mask JSON string from the mask editor
+    """
+    mask_path = get_frame_mask_path(frames_orig_dir, frame_filename)
+    try:
+        with open(mask_path, 'w') as fh:
+            json.dump(mask_data, fh)
+    except Exception as exc:
+        print(f"save_frame_mask: {exc}")
+
+
+def load_frame_mask(frames_orig_dir: str, frame_filename: str) -> dict:
+    """Load per-frame mask settings from the JSON sidecar; return {} if absent or corrupt."""
+    mask_path = get_frame_mask_path(frames_orig_dir, frame_filename)
+    if os.path.isfile(mask_path):
+        try:
+            with open(mask_path, 'r') as fh:
+                return json.load(fh)
+        except Exception:
+            pass
+    return {}
 
 
 def has_image_extension(image_path: str) -> bool:

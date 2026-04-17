@@ -237,6 +237,65 @@ def get_processing_plugins(masking_engine):
     return processors
 
 
+def get_face_crop_from_frame(frame_bgr) -> str:
+    """Return a base64 PNG data-URL of the canonical 512×512 aligned face crop from *frame_bgr*.
+
+    Replicates the same autorotation pre-processing that ProcessMgr.process_face uses, so
+    the crop shown in the Frame Editor mask modal exactly matches the coordinate space the
+    processor operates in.  Returns empty string when no face is detected.
+    """
+    import base64 as _b64
+    import cv2 as _cv2
+    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise
+
+    if frame_bgr is None:
+        return ""
+
+    def _rotation_action(face, frame):
+        bbox_w = face.bbox[2] - face.bbox[0]
+        bbox_h = face.bbox[3] - face.bbox[1]
+        if bbox_w <= bbox_h:
+            return None
+        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
+            forehead_x = face.landmark_2d_106[72][0]
+            chin_x     = face.landmark_2d_106[0][0]
+            if chin_x < forehead_x:
+                return "rotate_anticlockwise"
+            if forehead_x < chin_x:
+                return "rotate_clockwise"
+        fh, fw = frame.shape[:2]
+        bbox_cx = face.bbox[0] + bbox_w / 2.0
+        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
+
+    face = get_first_face(frame_bgr)
+    if face is None or not hasattr(face, 'kps') or face.kps is None:
+        return ""
+
+    frame = frame_bgr.copy()
+    if roop.globals.autorotate_faces:
+        action = _rotation_action(face, frame)
+        if action is not None:
+            x0, y0, x1, y1 = face.bbox.astype(int)
+            offs = int(max(x1 - x0, y1 - y0) * 0.25)
+            x0m = max(0, x0 - offs); y0m = max(0, y0 - offs)
+            x1m = min(frame.shape[1], x1 + offs); y1m = min(frame.shape[0], y1 + offs)
+            cut = frame[y0m:y1m, x0m:x1m]
+            if action == "rotate_anticlockwise":
+                cut = rotate_anticlockwise(cut)
+            else:
+                cut = rotate_clockwise(cut)
+            rotface = get_first_face(cut)
+            if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
+                face  = rotface
+                frame = cut
+
+    crop, _ = align_crop(frame, face.kps, 512)
+    ok, buf = _cv2.imencode('.png', crop)
+    if not ok:
+        return ""
+    return "data:image/png;base64," + _b64.b64encode(buf.tobytes()).decode('utf-8')
+
+
 def live_swap(frame, options):
     global _preview_process_mgr
 
@@ -253,7 +312,83 @@ def live_swap(frame, options):
     return newframe
 
 
-def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False) -> None:
+def _parse_per_frame_masks(json_str: str) -> dict:
+    """Parse the JSON string from mask_per_frame_store into a dict keyed by int frame number.
+
+    The JS stores {"1": maskJson, "5": maskJson} where maskJson is a dict with optional
+    "include" / "exclude" grayscale PNG data-URLs and "canonical": True.
+    Returns {} when the string is absent, empty, or unparseable.
+    """
+    import json as _json
+    if not json_str:
+        return {}
+    try:
+        raw = _json.loads(json_str)
+        if not isinstance(raw, dict):
+            return {}
+        return {int(k): v for k, v in raw.items() if k.isdigit()}
+    except Exception:
+        return {}
+
+
+def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list,
+                                   per_frame_masks: dict, masking_engine, new_clip_text: str,
+                                   num_swap_steps: int, restore_original_mouth: bool,
+                                   selected_index: int, use_3d_recon: bool) -> None:
+    """Re-process frames that have a custom per-frame mask.
+
+    Strategy:
+    - temp_frame_paths contains the already-swapped frames (global-mask run).
+    - orig_frame_paths are the pre-swap originals saved by save_original_frames().
+    - For each frame number in per_frame_masks, re-run live_swap on the original
+      with the custom mask and overwrite the corresponding temp frame.
+
+    Frame numbers in per_frame_masks are 1-based to match the UI slider / JS.
+    The temp / orig path lists are 0-based.
+    """
+    if not per_frame_masks or not orig_frame_paths:
+        return
+
+    import cv2 as _cv2
+
+    plugins = get_processing_plugins(masking_engine)
+
+    for frame_num_1, mask_data in per_frame_masks.items():
+        idx = frame_num_1 - 1          # convert 1-based → 0-based list index
+        if idx < 0 or idx >= len(orig_frame_paths):
+            continue
+        orig_path = orig_frame_paths[idx]
+        out_path  = temp_frame_paths[idx] if idx < len(temp_frame_paths) else orig_path
+
+        orig_bgr = _cv2.imread(orig_path)
+        if orig_bgr is None:
+            print(f"[per-frame mask] could not read original {orig_path}")
+            continue
+
+        import json as _json
+        mask_json_str = _json.dumps(mask_data) if isinstance(mask_data, dict) else None
+
+        options = ProcessOptions(
+            plugins,
+            roop.globals.distance_threshold,
+            roop.globals.blend_ratio,
+            roop.globals.face_swap_mode,
+            selected_index,
+            new_clip_text,
+            mask_json_str,
+            num_swap_steps,
+            roop.globals.subsample_size,
+            False,
+            restore_original_mouth,
+            use_3d_recon=use_3d_recon,
+        )
+        result = live_swap(orig_bgr, options)
+        if result is not None:
+            _cv2.imwrite(out_path, result)
+            print(f"[per-frame mask] frame {frame_num_1} reprocessed → {os.path.basename(out_path)}")
+
+
+def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="") -> None:
     global clip_text, process_mgr
 
     release_resources()
@@ -270,6 +405,15 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               roop.globals.subsample_size, False, restore_original_mouth,
                               use_3d_recon=use_3d_recon)
     process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+
+    # Stash per-frame mask map and batch options on globals so batch_process can access them
+    roop.globals.mask_per_frame = _parse_per_frame_masks(mask_per_frame_json)
+    roop.globals._batch_selected_index = selected_index
+    roop.globals._batch_clip_text      = new_clip_text
+    roop.globals._batch_num_steps      = num_swap_steps
+    roop.globals._batch_restore_mouth  = restore_original_mouth
+    roop.globals._batch_use_3d_recon   = use_3d_recon
+
     batch_process(output_method, files, use_new_method)
     return
 
@@ -346,7 +490,8 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
 
             start_processing = time()
-            if is_streaming_only == False and roop.globals.keep_frames or not use_new_method:
+            _has_per_frame_masks = bool(getattr(roop.globals, 'mask_per_frame', {}))
+            if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
                 util.create_temp(v.filename)
                 update_status('Extracting frames...')
                 ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
@@ -355,10 +500,31 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     return
 
                 temp_frame_paths = util.get_temp_frame_paths(v.filename)
+                # Save unswapped originals BEFORE run_batch overwrites them in-place.
+                # Needed for both keep_frames mode (Frame Editor) and per-frame mask re-processing.
+                per_frame_masks = getattr(roop.globals, 'mask_per_frame', {})
+                needs_originals = roop.globals.keep_frames or bool(per_frame_masks)
+                if needs_originals:
+                    util.save_original_frames(v.filename)
                 process_mgr.run_batch(temp_frame_paths, temp_frame_paths, roop.globals.execution_threads)
                 if not roop.globals.processing:
                     end_processing('Processing stopped!')
                     return
+
+                # Re-process any frames that have custom per-frame masks.
+                if per_frame_masks:
+                    update_status('Applying per-frame masks...')
+                    orig_paths = util.get_temp_frame_paths_from_dir(util.get_frames_orig_path(v.filename))
+                    _reprocess_custom_mask_frames(
+                        temp_frame_paths, orig_paths, per_frame_masks,
+                        masking_engine=None,
+                        new_clip_text=getattr(roop.globals, '_batch_clip_text', ''),
+                        num_swap_steps=getattr(roop.globals, '_batch_num_steps', 1),
+                        restore_original_mouth=getattr(roop.globals, '_batch_restore_mouth', False),
+                        selected_index=getattr(roop.globals, '_batch_selected_index', 0),
+                        use_3d_recon=getattr(roop.globals, '_batch_use_3d_recon', False),
+                    )
+
                 if roop.globals.wait_after_extraction:
                     extract_path = os.path.dirname(temp_frame_paths[0])
                     util.open_folder(extract_path)
@@ -367,8 +533,17 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     util.sort_rename_frames(extract_path)                                    
                 
                 ffmpeg.create_video(v.filename, v.finalname, fps)
-                if not roop.globals.keep_frames:
+                if roop.globals.keep_frames:
+                    util.move_frames_to_output(v.filename, fps=fps)
+                else:
                     util.delete_temp_frames(temp_frame_paths[0])
+                    # If we saved originals only for per-frame mask re-processing (not keep_frames),
+                    # clean them up now that the video has been compiled.
+                    if per_frame_masks and not roop.globals.keep_frames:
+                        orig_dir = util.get_frames_orig_path(v.filename)
+                        if os.path.isdir(orig_dir):
+                            import shutil as _shutil
+                            _shutil.rmtree(orig_dir, ignore_errors=True)
             else:
                 if util.has_extension(v.filename, ['gif']):
                     skip_audio = True

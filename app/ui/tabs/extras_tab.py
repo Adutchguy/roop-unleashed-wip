@@ -105,25 +105,32 @@ def extras_tab(bt_destfiles=None):
     output_path_state = gr.State(None)
 
     # ══════════════════════════════════════════════════════════════════════
-    # 🎞️ Frame Editor tab  (hidden — preserved for future use)
+    # 🎞️ Frame Editor tab
     # ══════════════════════════════════════════════════════════════════════
-    with gr.Tab("🎞️ Frame Editor", visible=False):
+    with gr.Tab("🎞️ Frame Editor", visible=True):
         # Persistent state for the loaded frame set
         fe_frames_list = gr.State([])   # sorted processed frame paths (_frames/)
         fe_orig_list   = gr.State([])   # sorted original (unswapped) frame paths (_frames_orig/)
         fe_orig_dir    = gr.State("")   # absolute path to _frames_orig/ directory
         fe_meta        = gr.State({})   # metadata dict (fps, source, image_format)
 
-        # ── Directory loader ──────────────────────────────────────────
-        with gr.Row():
-            fe_dir_input = gr.Textbox(
-                label="Frames directory",
-                placeholder="Paste the path to a _frames folder, e.g. C:/output/myvideo_frames",
-                scale=5,
-            )
-            fe_load_btn = gr.Button("📂 Load", variant="primary", scale=1, min_width=80)
+        # ── File drop loader ──────────────────────────────────────────
+        fe_file_drop = gr.File(
+            label="📂 Drop a video, GIF, or WebP file here to load its frames",
+            file_count="single",
+            file_types=["video", "image", ".webp", ".gif"],
+        )
 
-        fe_status = gr.Markdown("_No frames loaded — paste a frames directory path and click Load._")
+        with gr.Accordion("📁 Or load from an existing frames directory", open=False):
+            with gr.Row():
+                fe_dir_input = gr.Textbox(
+                    label="Frames directory",
+                    placeholder="Paste the path to a _frames folder, e.g. C:/output/myvideo_frames",
+                    scale=5,
+                )
+                fe_load_btn = gr.Button("📂 Load", variant="primary", scale=1, min_width=80)
+
+        fe_status = gr.Markdown("_Drop a media file above to load its frames, or expand the directory loader below._")
 
         # ── Frame navigation ─────────────────────────────────────────
         with gr.Row():
@@ -132,76 +139,98 @@ def extras_tab(bt_destfiles=None):
                                     label="Frame", scale=8)
             fe_next_btn = gr.Button("Next ▶", size="sm", scale=1, min_width=80)
 
-        # ── Frame view + Mask controls ───────────────────────────────
+        # ── Frame view (full-width with drawing support) ──────────────
+        fe_frame_view = gr.ImageEditor(
+            label="Current frame (draw to paint, eraser to undo strokes)",
+            sources=None,           # background set programmatically
+            type="numpy",
+            image_mode="RGB",
+            height=520,
+            layers=True,            # separate drawing layer for face-space tracking
+            transforms=(),          # disable crop/resize controls
+            brush=gr.Brush(
+                colors=["#ff0000", "#00ff00", "#0000ff",
+                        "#ffffff", "#000000", "#ffff00", "#ff8800"],
+                default_size=8,
+                color_mode="defaults",
+            ),
+            eraser=gr.Eraser(default_size=20),
+            value=None,
+        )
+
+        # ── Drawing save / revert ────────────────────────────────────
         with gr.Row():
-            # Left column: frame view
-            with gr.Column(scale=3):
-                fe_frame_view = gr.Image(
-                    label="Current frame (processed)",
-                    interactive=False,
-                    height=520,
-                    value=None,
+            fe_draw_save_btn   = gr.Button("💾 Save Drawing to Frame",
+                                           variant="primary", scale=2)
+            fe_draw_revert_btn = gr.Button("↩ Revert Frame",
+                                           variant="secondary", scale=1)
+
+        # ── Apply drawing across a frame range ───────────────────────
+        with gr.Group():
+            gr.Markdown("#### Apply Drawing to Frame Range")
+            with gr.Row():
+                fe_range_start = gr.Number(value=1, label="From frame",
+                                           minimum=1, step=1, scale=1)
+                fe_range_end   = gr.Number(value=1, label="To frame",
+                                           minimum=1, step=1, scale=1)
+            with gr.Row():
+                fe_apply_tracked_btn = gr.Button(
+                    "🎯 Face Tracking", variant="primary", scale=2
+                )
+                fe_apply_person_btn  = gr.Button(
+                    "🏃 Body Tracking", variant="primary", scale=2
+                )
+                fe_apply_range_btn   = gr.Button(
+                    "📋 Flat (no tracking)", variant="secondary", scale=1
                 )
 
-            # Right column: per-frame mask settings
-            with gr.Column(scale=2):
-                gr.Markdown("#### Per-Frame Mask Settings")
+        fe_draw_status = gr.Markdown("")
 
-                fe_mask_top = gr.Slider(
-                    0, 2.0, value=roop.globals.CFG.mask_top,
-                    label="Offset Face Top", step=0.01, interactive=True,
-                )
-                fe_mask_bottom = gr.Slider(
-                    0, 2.0, value=roop.globals.CFG.mask_bottom,
-                    label="Offset Face Bottom", step=0.01, interactive=True,
-                )
-                fe_mask_left = gr.Slider(
-                    0, 2.0, value=roop.globals.CFG.mask_left,
-                    label="Offset Face Left", step=0.01, interactive=True,
-                )
-                fe_mask_right = gr.Slider(
-                    0, 2.0, value=roop.globals.CFG.mask_right,
-                    label="Offset Face Right", step=0.01, interactive=True,
-                )
-                fe_face_blend = gr.Slider(
-                    0, 200, value=roop.globals.CFG.face_mask_blend,
-                    label="Face Mask Edge Blend", step=1, interactive=True,
-                )
-                fe_mouth_blend = gr.Slider(
-                    0, 200, value=roop.globals.CFG.mouth_mask_blend,
-                    label="Mouth Mask Blend", step=1, interactive=True,
-                )
-                with gr.Row():
-                    fe_mouth_top = gr.Slider(
-                        0, 10.0, value=roop.globals.CFG.mouth_top_scale,
-                        label="Mouth Top", step=0.1, interactive=True,
-                    )
-                    fe_mouth_bottom = gr.Slider(
-                        0, 10.0, value=roop.globals.CFG.mouth_bottom_scale,
-                        label="Mouth Bottom", step=0.1, interactive=True,
-                    )
-                with gr.Row():
-                    fe_mouth_left = gr.Slider(
-                        0, 10.0, value=roop.globals.CFG.mouth_left_scale,
-                        label="Mouth Left", step=0.1, interactive=True,
-                    )
-                    fe_mouth_right = gr.Slider(
-                        0, 10.0, value=roop.globals.CFG.mouth_right_scale,
-                        label="Mouth Right", step=0.1, interactive=True,
-                    )
-
-                fe_mask_btn = gr.Button(
-                    "🎭 Edit Canvas Mask",
-                    variant="secondary",
-                )
-
-                gr.Markdown(
-                    "_Opens the mask editor using the original unswapped face crop. "
-                    "Paint include/exclude areas, then click Apply & Close._"
-                )
-
-                fe_save_mask_btn = gr.Button("💾 Save Mask for this Frame", variant="primary")
-                fe_mask_save_status = gr.Markdown("")
+        # ── Hidden mask components (kept for JS bridge compatibility) ─
+        with gr.Column(visible=False):
+            fe_mask_top = gr.Slider(
+                0, 2.0, value=roop.globals.CFG.mask_top,
+                label="Offset Face Top", step=0.01, interactive=True,
+            )
+            fe_mask_bottom = gr.Slider(
+                0, 2.0, value=roop.globals.CFG.mask_bottom,
+                label="Offset Face Bottom", step=0.01, interactive=True,
+            )
+            fe_mask_left = gr.Slider(
+                0, 2.0, value=roop.globals.CFG.mask_left,
+                label="Offset Face Left", step=0.01, interactive=True,
+            )
+            fe_mask_right = gr.Slider(
+                0, 2.0, value=roop.globals.CFG.mask_right,
+                label="Offset Face Right", step=0.01, interactive=True,
+            )
+            fe_face_blend = gr.Slider(
+                0, 200, value=roop.globals.CFG.face_mask_blend,
+                label="Face Mask Edge Blend", step=1, interactive=True,
+            )
+            fe_mouth_blend = gr.Slider(
+                0, 200, value=roop.globals.CFG.mouth_mask_blend,
+                label="Mouth Mask Blend", step=1, interactive=True,
+            )
+            fe_mouth_top = gr.Slider(
+                0, 10.0, value=roop.globals.CFG.mouth_top_scale,
+                label="Mouth Top", step=0.1, interactive=True,
+            )
+            fe_mouth_bottom = gr.Slider(
+                0, 10.0, value=roop.globals.CFG.mouth_bottom_scale,
+                label="Mouth Bottom", step=0.1, interactive=True,
+            )
+            fe_mouth_left = gr.Slider(
+                0, 10.0, value=roop.globals.CFG.mouth_left_scale,
+                label="Mouth Left", step=0.1, interactive=True,
+            )
+            fe_mouth_right = gr.Slider(
+                0, 10.0, value=roop.globals.CFG.mouth_right_scale,
+                label="Mouth Right", step=0.1, interactive=True,
+            )
+            fe_mask_btn      = gr.Button("🎭 Edit Canvas Mask", variant="secondary")
+            fe_save_mask_btn = gr.Button("💾 Save Mask for this Frame", variant="primary")
+            fe_mask_save_status = gr.Markdown("")
 
         # Hidden Gradio stores used as JS ↔ Python bridge for the canvas mask editor
         # These mirror the faceswap tab's stores but are scoped to the Frame Editor.
@@ -215,24 +244,37 @@ def extras_tab(bt_destfiles=None):
                                                    elem_id="fe_mask_face_swap_crop_store",
                                                    label="fe_mask_face_swap_crop_store")
 
-        # ── Compile (reprocess originals) ──────────────────────────────
-        with gr.Row(variant="panel"):
-            fe_fps = gr.Number(value=24.0, label="Output FPS",
-                               minimum=1, maximum=120, scale=1, min_width=120)
-            fe_compile_mp4_btn = gr.Button("🎬 Reprocess → MP4", scale=2)
-            fe_compile_gif_btn = gr.Button("🎞️ Reprocess → GIF", scale=2)
+        # ── Compile current frames (simple stitch — no face swap) ──────
+        with gr.Group():
+            gr.Markdown("#### Compile Frames")
+            with gr.Row(variant="panel"):
+                fe_fps = gr.Number(value=24.0, label="Output FPS",
+                                   minimum=1, maximum=120, scale=1, min_width=120)
+                fe_compile_current_mp4_btn = gr.Button("🎬 Compile → MP4", variant="primary", scale=2)
+                fe_compile_current_gif_btn = gr.Button("🎞️ Compile → GIF", variant="primary", scale=2)
+            gr.Markdown(
+                "_Stitches the current frame images (with any drawings baked in) directly "
+                "into a video or GIF.  No face-swap is applied._"
+            )
 
-        gr.Markdown(
-            "_Reprocess iterates each **original** (unswapped) frame using the saved per-frame "
-            "mask settings and the current face-swap configuration, then compiles the result._"
-        )
+        # ── Reprocess (face-swap pipeline from originals) ───────────
+        with gr.Group():
+            gr.Markdown("#### Reprocess (Face Swap)")
+            with gr.Row(variant="panel"):
+                fe_compile_mp4_btn = gr.Button("🎬 Reprocess → MP4", scale=2)
+                fe_compile_gif_btn = gr.Button("🎞️ Reprocess → GIF", scale=2)
+            gr.Markdown(
+                "_Reruns the face-swap pipeline on each **original** (unswapped) frame "
+                "using saved per-frame mask settings, then compiles.  "
+                "Requires originals and a loaded source face._"
+            )
 
         # ── Compiled output preview ───────────────────────────────────
         with gr.Row():
-            fe_out_image = gr.Image(label="Reprocessed output",
+            fe_out_image = gr.Image(label="Output",
                                     visible=False, interactive=False,
                                     show_download_button=True)
-            fe_out_video = gr.Video(label="Reprocessed output",
+            fe_out_video = gr.Video(label="Output",
                                     visible=False, interactive=False)
 
     # ── All slider components for mask I/O ───────────────────────────
@@ -245,7 +287,48 @@ def extras_tab(bt_destfiles=None):
 
     # ── Frame Editor event wiring ─────────────────────────────────────
 
-    # Load button
+    # Helper to sync range-end to total frame count after loading
+    def _fe_sync_range_end(frames):
+        n = len(frames)
+        return gr.update(value=n) if n > 0 else gr.update()
+
+    # File drop — clear resets the entire Frame Editor
+    fe_file_drop.clear(
+        fn=on_fe_clear,
+        outputs=[
+            fe_slider, fe_status,
+            fe_frames_list, fe_orig_list, fe_orig_dir, fe_meta,
+            fe_fps, fe_range_start, fe_range_end,
+            fe_frame_view, fe_draw_status,
+            fe_mask_json_store, fe_mask_face_crop_store, fe_mask_face_swap_crop_store,
+            fe_out_image, fe_out_video,
+            *_fe_mask_sliders,
+        ],
+        show_progress="hidden",
+    )
+
+    # File drop loader (primary)
+    fe_file_drop.upload(
+        fn=on_fe_load_file,
+        inputs=[fe_file_drop],
+        outputs=[fe_slider, fe_status, fe_frames_list, fe_orig_list,
+                 fe_orig_dir, fe_meta, fe_fps],
+        show_progress="hidden",
+    ).then(
+        fn=on_fe_frame_changed,
+        inputs=[fe_slider, fe_frames_list, fe_orig_list, fe_orig_dir],
+        outputs=[fe_frame_view, fe_mask_json_store,
+                 fe_mask_face_crop_store, fe_mask_face_swap_crop_store,
+                 *_fe_mask_sliders],
+        show_progress="hidden",
+    ).then(
+        fn=_fe_sync_range_end,
+        inputs=[fe_frames_list],
+        outputs=[fe_range_end],
+        show_progress="hidden",
+    )
+
+    # Directory load (fallback, inside accordion)
     fe_load_btn.click(
         fn=on_fe_load,
         inputs=[fe_dir_input],
@@ -258,6 +341,11 @@ def extras_tab(bt_destfiles=None):
         outputs=[fe_frame_view, fe_mask_json_store,
                  fe_mask_face_crop_store, fe_mask_face_swap_crop_store,
                  *_fe_mask_sliders],
+        show_progress="hidden",
+    ).then(
+        fn=_fe_sync_range_end,
+        inputs=[fe_frames_list],
+        outputs=[fe_range_end],
         show_progress="hidden",
     )
 
@@ -304,7 +392,52 @@ def extras_tab(bt_destfiles=None):
         outputs=[fe_mask_save_status],
     )
 
-    # Compile / reprocess buttons
+    # Save drawing to frame / revert frame
+    fe_draw_save_btn.click(
+        fn=on_fe_save_drawing,
+        inputs=[fe_frame_view, fe_slider, fe_frames_list],
+        outputs=[fe_draw_status],
+    )
+    fe_draw_revert_btn.click(
+        fn=on_fe_revert_frame,
+        inputs=[fe_slider, fe_frames_list, fe_orig_list],
+        outputs=[fe_frame_view, fe_draw_status],
+    )
+
+    # Apply drawing with face tracking across a range
+    fe_apply_tracked_btn.click(
+        fn=on_fe_apply_tracked,
+        inputs=[fe_frame_view, fe_slider, fe_range_start, fe_range_end, fe_frames_list],
+        outputs=[fe_draw_status],
+    )
+
+    # Apply drawing with optical-flow body tracking across a range
+    fe_apply_person_btn.click(
+        fn=on_fe_apply_person_tracked,
+        inputs=[fe_frame_view, fe_slider, fe_range_start, fe_range_end, fe_frames_list],
+        outputs=[fe_draw_status],
+    )
+
+    # Apply drawing flat (no tracking) across a range
+    fe_apply_range_btn.click(
+        fn=on_fe_apply_range,
+        inputs=[fe_frame_view, fe_slider, fe_range_start, fe_range_end, fe_frames_list],
+        outputs=[fe_draw_status],
+    )
+
+    # Compile current frames (simple stitch — no face swap)
+    fe_compile_current_mp4_btn.click(
+        fn=on_fe_compile_current_mp4,
+        inputs=[fe_frames_list, fe_fps, fe_meta],
+        outputs=[fe_out_image, fe_out_video, fe_status],
+    )
+    fe_compile_current_gif_btn.click(
+        fn=on_fe_compile_current_gif,
+        inputs=[fe_frames_list, fe_fps, fe_meta],
+        outputs=[fe_out_image, fe_out_video, fe_status],
+    )
+
+    # Reprocess (face-swap pipeline from originals)
     fe_compile_mp4_btn.click(
         fn=on_fe_compile_mp4,
         inputs=[fe_frames_list, fe_orig_list, fe_orig_dir, fe_meta, fe_fps],
@@ -477,10 +610,20 @@ def on_apply_all(files, resolution, rotation, fps,
     for f in paths:
         dest = util.get_destfilename_from_path(f, roop.globals.output_path, '_edited')
         if is_awebp or util.is_animated_webp(f):
-            # Animated webp: FFmpeg can't decode it — pipe PIL frames through ffmpeg.
-            # Output as mp4 since libx264 cannot write to a .webp container.
-            dest = os.path.splitext(dest)[0] + '.mp4'
-            success = ffmpeg.apply_media_transforms_webp(f, dest, filters, cur_fps)
+            # Animated webp → GIF output (consistent with swap pipeline).
+            # PIL pipes frames through ffmpeg to a temp mp4, then we convert
+            # that to a palette-optimised GIF and discard the mp4.
+            base = os.path.splitext(dest)[0]
+            dest_mp4 = base + '__temp.mp4'
+            dest_gif = base + '.gif'
+            success = ffmpeg.apply_media_transforms_webp(f, dest_mp4, filters, cur_fps)
+            if success and os.path.isfile(dest_mp4):
+                # Pass cur_fps explicitly so the GIF uses the original WebP timing
+                # rather than re-detecting it from the intermediate MP4.
+                ffmpeg.create_gif_from_video(dest_mp4, dest_gif, target_fps=cur_fps)
+                os.remove(dest_mp4)
+                success = os.path.isfile(dest_gif)
+            dest = dest_gif
         elif is_agif or util.is_animated_gif(f):
             # Animated GIF: use palettegen+paletteuse pipeline to preserve quality.
             target_fps = fps if abs(fps - cur_fps) > 0.1 else None
@@ -501,6 +644,486 @@ def on_apply_all(files, resolution, rotation, fps,
     if util.is_image(first) or util.is_animated_gif(first) or util.is_animated_webp(first):
         return gr.update(visible=True, value=first), gr.update(visible=False, value=None), out
     return gr.update(visible=False, value=None), gr.update(visible=True, value=first), out
+
+
+def on_fe_save_drawing(editor_value, frame_num, frame_paths: list):
+    """Composite the ImageEditor drawing onto the frame file on disk.
+
+    The ImageEditor returns a dict with keys 'background', 'layers', and
+    'composite'. The 'composite' is the merged RGBA numpy array; we flatten
+    it to RGB (alpha channel blended over the original file) and overwrite
+    the processed frame so it is picked up when reprocessing or compiling.
+    """
+    if not frame_paths:
+        return "⚠️ No frames loaded."
+    if not isinstance(editor_value, dict):
+        return "⚠️ No editor value received."
+
+    composite = editor_value.get("composite")
+    if composite is None:
+        return "ℹ️ Nothing drawn yet — make a stroke first."
+
+    idx = max(0, int(frame_num) - 1)
+    if idx >= len(frame_paths):
+        return "⚠️ Frame index out of range."
+    frame_path = frame_paths[idx]
+    if not os.path.isfile(frame_path):
+        return f"⚠️ Frame file not found: {os.path.basename(frame_path)}"
+
+    # composite arrives as (H, W, 4) RGBA or (H, W, 3) RGB numpy array
+    if composite.ndim == 3 and composite.shape[2] == 4:
+        alpha  = composite[:, :, 3:4].astype(np.float32) / 255.0
+        rgb_fg = composite[:, :, :3].astype(np.float32)
+        # Blend drawing over the on-disk frame using the alpha channel
+        orig_bgr = cv2.imread(frame_path)
+        if orig_bgr is None:
+            return f"⚠️ Could not read {os.path.basename(frame_path)} from disk."
+        orig_rgb = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+        blended  = (rgb_fg * alpha + orig_rgb * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+        bgr = cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
+    elif composite.ndim == 3 and composite.shape[2] == 3:
+        bgr = cv2.cvtColor(composite, cv2.COLOR_RGB2BGR)
+    else:
+        return "⚠️ Unexpected composite format — could not save."
+
+    cv2.imwrite(frame_path, bgr)
+    return f"✅ Drawing saved to frame {int(frame_num)}"
+
+
+def on_fe_revert_frame(frame_num, frame_paths: list, orig_paths: list):
+    """Copy the original (unswapped) frame back over the processed frame on disk,
+    then reload the ImageEditor so the canvas reflects the reverted state.
+    """
+    import shutil as _shutil
+    no_update = gr.update()
+    if not frame_paths:
+        return no_update, "⚠️ No frames loaded."
+    if not orig_paths:
+        return no_update, "⚠️ No originals found — run swap with 'Keep Frames' enabled."
+
+    idx = max(0, int(frame_num) - 1)
+    if idx >= len(orig_paths) or idx >= len(frame_paths):
+        return no_update, "⚠️ Frame index out of range."
+
+    orig_path = orig_paths[idx]
+    proc_path = frame_paths[idx]
+    if not os.path.isfile(orig_path):
+        return no_update, f"⚠️ Original not found: {os.path.basename(orig_path)}"
+
+    _shutil.copy2(orig_path, proc_path)
+    editor_value = {"background": proc_path, "layers": [], "composite": None}
+    return gr.update(value=editor_value), f"↩ Frame {int(frame_num)} reverted to original."
+
+
+def on_fe_clear():
+    """Reset all Frame Editor state when the source file is cleared."""
+    cfg = roop.globals.CFG
+    default_sliders = [
+        cfg.mask_top, cfg.mask_bottom, cfg.mask_left, cfg.mask_right,
+        cfg.face_mask_blend,
+        cfg.mouth_mask_blend, cfg.mouth_top_scale, cfg.mouth_bottom_scale,
+        cfg.mouth_left_scale, cfg.mouth_right_scale,
+    ]
+    return (
+        gr.update(value=1, minimum=1, maximum=1),                   # fe_slider
+        "_Drop a media file above to load its frames, or expand the directory loader below._",  # fe_status
+        [],                                                          # fe_frames_list
+        [],                                                          # fe_orig_list
+        "",                                                          # fe_orig_dir
+        {},                                                          # fe_meta
+        gr.update(value=24.0),                                       # fe_fps
+        gr.update(value=1),                                          # fe_range_start
+        gr.update(value=1),                                          # fe_range_end
+        gr.update(value=None),                                       # fe_frame_view
+        "",                                                          # fe_draw_status
+        gr.update(value=""),                                         # fe_mask_json_store
+        gr.update(value=""),                                         # fe_mask_face_crop_store
+        gr.update(value=""),                                         # fe_mask_face_swap_crop_store
+        gr.update(visible=False, value=None),                        # fe_out_image
+        gr.update(visible=False, value=None),                        # fe_out_video
+        *[gr.update(value=v) for v in default_sliders],             # _fe_mask_sliders (10)
+    )
+
+
+def on_fe_load_file(file):
+    """Extract frames from a dropped media file and load them into the Frame Editor.
+
+    Accepts a gr.File upload object (video, animated GIF, animated WebP, or static image).
+    Frames are extracted to the standard roop temp directory for that file, then
+    on_fe_load() is called with that directory so all existing state logic is reused.
+    """
+    _empty = (
+        gr.update(value=1, minimum=1, maximum=1),
+        "_No frames loaded._",
+        [], [], "", {},
+        gr.update(value=24.0),
+    )
+    if file is None:
+        return _empty
+
+    file_path = file.name if hasattr(file, 'name') else str(file)
+    if not os.path.isfile(file_path):
+        return _empty
+
+    is_awebp    = util.is_animated_webp(file_path)
+    is_agif     = util.is_animated_gif(file_path)
+    is_animated = is_awebp or is_agif
+    is_img      = util.is_image(file_path) and not is_animated
+
+    # Static image: just browse its parent directory
+    if is_img:
+        return on_fe_load(os.path.dirname(file_path))
+
+    # Detect fps for the frame extraction command
+    try:
+        fps = util.detect_fps(file_path)
+    except Exception:
+        fps = 24.0
+
+    gr_status = f"_Extracting frames from **{os.path.basename(file_path)}** at {fps:.2f} fps…_"
+    # Extract frames into the standard temp directory
+    ok = ffmpeg.extract_frames(file_path, None, None, fps)
+    if not ok:
+        return (
+            gr.update(value=1, minimum=1, maximum=1),
+            f"⚠️ Frame extraction failed for **{os.path.basename(file_path)}**.",
+            [], [], "", {},
+            gr.update(value=fps),
+        )
+
+    temp_dir     = util.get_temp_directory_path(file_path)
+    image_format = roop.globals.CFG.output_image_format
+    # Write meta.json so on_fe_load() reads the correct fps instead of defaulting to 24
+    util.write_frames_metadata(temp_dir, fps, os.path.basename(file_path), image_format)
+    return on_fe_load(temp_dir)
+
+
+def _fe_extract_drawing(editor_value: dict, src_bgr: np.ndarray):
+    """Return (draw_rgb, draw_mask) by diffing the composite against the on-disk frame.
+
+    Using `composite` (frame + strokes merged) and diffing against the clean frame
+    is far more reliable than relying on `layers[0]`, which Gradio may leave empty.
+
+    draw_rgb  — float32 (H, W, 3) RGB colour of drawn pixels at source resolution
+    draw_mask — float32 (H, W, 1) alpha: 1.0 where drawn, 0.0 elsewhere
+
+    Returns (None, None) if nothing was drawn or composite is unavailable.
+    """
+    composite = editor_value.get("composite")
+    if composite is None:
+        return None, None
+
+    h_src, w_src = src_bgr.shape[:2]
+    src_rgb = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+
+    # Composite may be RGBA or RGB; extract RGB
+    if composite.ndim == 3 and composite.shape[2] == 4:
+        comp_rgb = composite[:, :, :3].astype(np.float32)
+    else:
+        comp_rgb = composite.astype(np.float32)
+
+    # Resize to match source frame if the editor displayed a scaled-down version
+    if comp_rgb.shape[:2] != (h_src, w_src):
+        comp_rgb = cv2.resize(comp_rgb, (w_src, h_src), interpolation=cv2.INTER_LINEAR)
+
+    # Per-pixel max-channel absolute difference → drawn pixels stand out
+    diff      = np.abs(comp_rgb - src_rgb).max(axis=2)      # (H, W)
+    draw_mask = (diff > 10).astype(np.float32)[:, :, np.newaxis]  # threshold ignores JPEG noise
+
+    if draw_mask.sum() < 1:
+        return None, None  # nothing drawn
+
+    return comp_rgb, draw_mask
+
+
+def on_fe_apply_tracked(editor_value, frame_num, range_start, range_end, frame_paths: list):
+    """Warp strokes from the current frame's face-space onto every frame in the range.
+
+    Strategy:
+      1. Diff composite vs on-disk source frame → isolate drawn pixels reliably.
+      2. estimate_norm(src_kps) → warp drawing into 112×112 face-space.
+      3. For each target: estimate_norm(tgt_kps) → invert → warp back → alpha-blend.
+         If no face is detected in a target frame, fall back to the source transform
+         so the drawing still appears (rather than silently skipping the frame).
+    """
+    from roop.face_util import get_first_face, estimate_norm
+
+    if not frame_paths:
+        return "⚠️ No frames loaded."
+    if not isinstance(editor_value, dict):
+        return "⚠️ No editor value — open a frame first."
+
+    # Read source frame from disk
+    cur_idx = max(0, int(frame_num) - 1)
+    if cur_idx >= len(frame_paths):
+        return "⚠️ Frame index out of range."
+    src_bgr = cv2.imread(frame_paths[cur_idx])
+    if src_bgr is None:
+        return "⚠️ Could not read source frame from disk."
+
+    # Isolate drawn pixels via composite-vs-frame diff
+    draw_rgb, draw_mask = _fe_extract_drawing(editor_value, src_bgr)
+    if draw_rgb is None:
+        return "ℹ️ No drawing detected — make a stroke on the current frame first."
+
+    # Detect face in source frame to establish face-space transform
+    src_face = get_first_face(src_bgr)
+    if src_face is None:
+        return "⚠️ No face detected in current frame — cannot establish face-space transform."
+
+    face_size = 112
+    M_src     = estimate_norm(src_face.kps, face_size)
+
+    # Build RGBA drawing array and warp to face-space
+    draw_alpha_u8  = (draw_mask * 255).clip(0, 255).astype(np.uint8)
+    draw_rgb_u8    = draw_rgb.clip(0, 255).astype(np.uint8)
+    drawing_rgba   = np.concatenate([draw_rgb_u8, draw_alpha_u8], axis=2)
+
+    face_drawing = cv2.warpAffine(
+        drawing_rgba, M_src, (face_size, face_size),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0),
+    )
+
+    # Apply to each frame in range
+    start_idx = max(0, int(range_start) - 1)
+    end_idx   = min(len(frame_paths) - 1, int(range_end) - 1)
+    if start_idx > end_idx:
+        return "⚠️ Invalid range (From frame > To frame)."
+
+    applied   = 0
+    no_face   = 0
+    for i in range(start_idx, end_idx + 1):
+        tgt_path = frame_paths[i]
+        tgt_bgr  = cv2.imread(tgt_path)
+        if tgt_bgr is None:
+            continue
+
+        tgt_face = get_first_face(tgt_bgr)
+        if tgt_face is not None:
+            M_inv = cv2.invertAffineTransform(estimate_norm(tgt_face.kps, face_size))
+        else:
+            # Fallback: use source frame's inverse transform so the frame isn't skipped
+            M_inv = cv2.invertAffineTransform(M_src)
+            no_face += 1
+
+        h_tgt, w_tgt = tgt_bgr.shape[:2]
+        frame_drawing = cv2.warpAffine(
+            face_drawing, M_inv, (w_tgt, h_tgt),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0, 0),
+        )
+
+        alpha   = frame_drawing[:, :, 3:4].astype(np.float32) / 255.0
+        rgb_fg  = frame_drawing[:, :, :3].astype(np.float32)
+        tgt_rgb = cv2.cvtColor(tgt_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+        blended = (rgb_fg * alpha + tgt_rgb * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+        cv2.imwrite(tgt_path, cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+        applied += 1
+
+    msg = f"✅ Drawing applied (face-tracked) to **{applied}** frame(s)"
+    if no_face:
+        msg += f" — ⚠️ {no_face} frame(s) used fallback position (no face detected)"
+    return msg
+
+
+def on_fe_apply_person_tracked(editor_value, frame_num, range_start, range_end,
+                                frame_paths: list):
+    """Track the drawing across frames using sparse Lucas-Kanade optical flow.
+
+    Works on any part of the person (arms, torso, hair, clothing, face) — not just
+    the face region.  The algorithm:
+
+      1. Extract drawn pixels via composite-vs-source diff.
+      2. Sample up to 300 feature points around the drawn region using
+         goodFeaturesToTrack (Shi-Tomasi corners provide stable tracking targets).
+      3. Forward pass (source → end): track points frame-by-frame with LK,
+         estimate a partial affine (scale + rotation + translation) from the
+         original source positions → current positions, warp drawing with that.
+      4. Backward pass (source → start): same logic in reverse.
+    """
+    if not frame_paths:
+        return "⚠️ No frames loaded."
+    if not isinstance(editor_value, dict):
+        return "⚠️ No editor value — open a frame first."
+
+    cur_idx   = max(0, int(frame_num) - 1)
+    start_idx = max(0, int(range_start) - 1)
+    end_idx   = min(len(frame_paths) - 1, int(range_end) - 1)
+    if cur_idx >= len(frame_paths):
+        return "⚠️ Frame index out of range."
+    if start_idx > end_idx:
+        return "⚠️ Invalid range (From frame > To frame)."
+
+    src_bgr = cv2.imread(frame_paths[cur_idx])
+    if src_bgr is None:
+        return "⚠️ Could not read source frame."
+
+    draw_rgb, draw_mask = _fe_extract_drawing(editor_value, src_bgr)
+    if draw_rgb is None:
+        return "ℹ️ No drawing detected — make a stroke on the current frame first."
+
+    # ── Build RGBA drawing at source resolution ───────────────────────
+    drawing_rgba = np.concatenate(
+        [draw_rgb.clip(0, 255).astype(np.uint8),
+         (draw_mask * 255).clip(0, 255).astype(np.uint8)],
+        axis=2,
+    )
+
+    # ── Sample feature points around the drawn region ─────────────────
+    src_gray = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY)
+    mask_sq  = draw_mask.squeeze()
+    ys, xs   = np.where(mask_sq > 0)
+    if len(ys) == 0:
+        return "ℹ️ No drawing detected."
+
+    # Expand bounding box ~40 px for richer corner features
+    h_fr, w_fr = src_bgr.shape[:2]
+    y1 = max(0, int(ys.min()) - 40);  y2 = min(h_fr, int(ys.max()) + 40)
+    x1 = max(0, int(xs.min()) - 40);  x2 = min(w_fr, int(xs.max()) + 40)
+    roi_mask = np.zeros_like(src_gray)
+    roi_mask[y1:y2, x1:x2] = 255
+
+    pts = cv2.goodFeaturesToTrack(
+        src_gray, maxCorners=300, qualityLevel=0.005,
+        minDistance=4, mask=roi_mask,
+    )
+    if pts is None or len(pts) < 4:
+        # Fallback: sample pixel centres from the drawn area
+        idx = np.random.choice(len(ys), min(300, len(ys)), replace=False)
+        pts = np.stack([xs[idx], ys[idx]], axis=1).reshape(-1, 1, 2).astype(np.float32)
+
+    initial_pts = pts.reshape(-1, 2)          # (N, 2) — fixed source positions
+    N           = len(initial_pts)
+
+    LK = dict(winSize=(21, 21), maxLevel=3,
+              criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
+
+    # ── Helper: warp drawing with affine M and alpha-blend onto frame ─
+    def _apply_M(tgt_bgr: np.ndarray, M: np.ndarray) -> np.ndarray:
+        h, w = tgt_bgr.shape[:2]
+        warped  = cv2.warpAffine(drawing_rgba, M, (w, h),
+                                 flags=cv2.INTER_LINEAR,
+                                 borderMode=cv2.BORDER_CONSTANT,
+                                 borderValue=(0, 0, 0, 0))
+        alpha   = warped[:, :, 3:4].astype(np.float32) / 255.0
+        rgb_fg  = warped[:, :, :3].astype(np.float32)
+        tgt_rgb = cv2.cvtColor(tgt_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+        blended = (rgb_fg * alpha + tgt_rgb * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+        return cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
+
+    # ── Helper: LK step → affine estimate → (M, new_pts) ────────────
+    def _lk_step(prev_gray, curr_gray, cur_pts, src_pts):
+        """Track cur_pts into curr_gray; return (M, next_pts, valid_count)."""
+        next_pts, st, _ = cv2.calcOpticalFlowPyrLK(
+            prev_gray, curr_gray,
+            cur_pts.reshape(-1, 1, 2).astype(np.float32),
+            None, **LK,
+        )
+        valid = st.reshape(-1).astype(bool)
+        M = None
+        if valid.sum() >= 3:
+            M, _ = cv2.estimateAffinePartial2D(
+                src_pts[valid].reshape(-1, 1, 2),
+                next_pts.reshape(-1, 2)[valid].reshape(-1, 1, 2),
+            )
+        next_pts_flat = next_pts.reshape(-1, 2)
+        # Reset lost points to their last position so tracking can recover
+        next_pts_flat[~valid] = cur_pts[~valid]
+        return M, next_pts_flat, int(valid.sum())
+
+    applied = 0
+    identity = np.eye(2, 3, dtype=np.float32)
+
+    # Apply directly to the source frame (no warp needed)
+    if start_idx <= cur_idx <= end_idx:
+        tgt_bgr = cv2.imread(frame_paths[cur_idx])
+        if tgt_bgr is not None:
+            cv2.imwrite(frame_paths[cur_idx], _apply_M(tgt_bgr, identity))
+            applied += 1
+
+    # ── Forward pass: cur_idx+1 → end_idx ────────────────────────────
+    prev_gray = src_gray
+    fwd_pts   = initial_pts.copy()
+    for i in range(cur_idx + 1, end_idx + 1):
+        curr_bgr  = cv2.imread(frame_paths[i])
+        if curr_bgr is None:
+            continue
+        curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
+        M, fwd_pts, n_valid = _lk_step(prev_gray, curr_gray, fwd_pts, initial_pts)
+        if M is not None:
+            cv2.imwrite(frame_paths[i], _apply_M(curr_bgr, M))
+            applied += 1
+        prev_gray = curr_gray
+
+    # ── Backward pass: cur_idx-1 → start_idx ─────────────────────────
+    prev_gray = src_gray
+    bwd_pts   = initial_pts.copy()
+    for i in range(cur_idx - 1, start_idx - 1, -1):
+        curr_bgr  = cv2.imread(frame_paths[i])
+        if curr_bgr is None:
+            continue
+        curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
+        M, bwd_pts, n_valid = _lk_step(prev_gray, curr_gray, bwd_pts, initial_pts)
+        if M is not None:
+            cv2.imwrite(frame_paths[i], _apply_M(curr_bgr, M))
+            applied += 1
+        prev_gray = curr_gray
+
+    return f"✅ Drawing applied (body-tracked) to **{applied}** frame(s)"
+
+
+def on_fe_apply_range(editor_value, frame_num, range_start, range_end, frame_paths: list):
+    """Paste the drawing flat (no face tracking) onto every frame in the range.
+
+    Uses the same diff-vs-source approach as on_fe_apply_tracked to isolate
+    the drawn pixels reliably regardless of Gradio's layers API behaviour.
+    """
+    if not frame_paths:
+        return "⚠️ No frames loaded."
+    if not isinstance(editor_value, dict):
+        return "⚠️ No editor value — open a frame first."
+
+    # Read source frame to compute drawing via diff
+    cur_idx = max(0, int(frame_num) - 1)
+    if cur_idx >= len(frame_paths):
+        return "⚠️ Frame index out of range."
+    src_bgr = cv2.imread(frame_paths[cur_idx])
+    if src_bgr is None:
+        return "⚠️ Could not read source frame from disk."
+
+    draw_rgb, draw_mask = _fe_extract_drawing(editor_value, src_bgr)
+    if draw_rgb is None:
+        return "ℹ️ No drawing detected — make a stroke on the current frame first."
+
+    start_idx = max(0, int(range_start) - 1)
+    end_idx   = min(len(frame_paths) - 1, int(range_end) - 1)
+    if start_idx > end_idx:
+        return "⚠️ Invalid range (From frame > To frame)."
+
+    h_src, w_src = src_bgr.shape[:2]
+    applied = 0
+    for i in range(start_idx, end_idx + 1):
+        tgt_path = frame_paths[i]
+        tgt_bgr  = cv2.imread(tgt_path)
+        if tgt_bgr is None:
+            continue
+
+        h, w = tgt_bgr.shape[:2]
+        if (h, w) != (h_src, w_src):
+            _rgb  = cv2.resize(draw_rgb.astype(np.uint8), (w, h)).astype(np.float32)
+            _mask = cv2.resize(draw_mask.squeeze(), (w, h))[:, :, np.newaxis]
+        else:
+            _rgb, _mask = draw_rgb, draw_mask
+
+        tgt_rgb = cv2.cvtColor(tgt_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+        blended = (_rgb * _mask + tgt_rgb * (1.0 - _mask)).clip(0, 255).astype(np.uint8)
+        cv2.imwrite(tgt_path, cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+        applied += 1
+
+    return f"✅ Drawing applied (flat) to **{applied}** frame(s)"
 
 
 def on_send_to_faceswap(paths):
@@ -622,8 +1245,12 @@ def _fe_build_frame_outputs(frame_num: int, frame_paths: list,
                     mask_data.get('mouth_right',      slider_vals[9]),
                 ]
 
+    # ImageEditor expects a dict with a 'background' key to set the canvas
+    # without disturbing any in-progress drawing session.  Passing a plain
+    # filepath string also works and clears any existing drawing layers.
+    editor_value = {"background": proc_path, "layers": [], "composite": None} if proc_path else None
     return (
-        gr.update(value=proc_path),
+        gr.update(value=editor_value),
         gr.update(value=mask_json),
         gr.update(value=face_crop_url),
         gr.update(value=swap_crop_url),
@@ -837,6 +1464,66 @@ def _fe_reprocess_frames(orig_paths: list, orig_dir: str, meta: dict, fps: float
         return None, None
 
     return out_dir, image_format
+
+
+def on_fe_compile_current_mp4(frame_paths: list, fps, meta: dict):
+    """Stitch the current processed frame images directly into an MP4 (no face swap)."""
+    _no = (gr.update(visible=False), gr.update(visible=False))
+    if not frame_paths:
+        return (*_no, "⚠️ No frames loaded.")
+
+    fps_val      = float(fps) if fps else float(meta.get('fps', 24.0))
+    image_format = meta.get('image_format', roop.globals.CFG.output_image_format)
+    frames_dir   = os.path.dirname(frame_paths[0])
+    source       = meta.get('source', 'output')
+    source_base  = os.path.splitext(os.path.basename(source))[0] if source else 'output'
+    output_path  = os.path.join(_fe_output_dir(frame_paths, []),
+                                f"{source_base}_compiled.mp4")
+
+    success = ffmpeg.create_video_from_frames_dir(frames_dir, output_path, fps_val, image_format)
+    if not success or not os.path.isfile(output_path):
+        return (*_no, "❌ MP4 compilation failed — check the console for ffmpeg errors.")
+
+    return (
+        gr.update(visible=False),
+        gr.update(visible=True, value=output_path),
+        f"✅ Compiled → **{os.path.basename(output_path)}**",
+    )
+
+
+def on_fe_compile_current_gif(frame_paths: list, fps, meta: dict):
+    """Stitch the current processed frame images directly into an animated GIF (no face swap)."""
+    _no = (gr.update(visible=False), gr.update(visible=False))
+    if not frame_paths:
+        return (*_no, "⚠️ No frames loaded.")
+
+    fps_val      = float(fps) if fps else float(meta.get('fps', 24.0))
+    image_format = meta.get('image_format', roop.globals.CFG.output_image_format)
+    frames_dir   = os.path.dirname(frame_paths[0])
+    source       = meta.get('source', 'output')
+    source_base  = os.path.splitext(os.path.basename(source))[0] if source else 'output'
+    output_path  = os.path.join(_fe_output_dir(frame_paths, []),
+                                f"{source_base}_compiled.gif")
+
+    # Detect frame dimensions from first frame
+    width = height = 0
+    try:
+        with Image.open(frame_paths[0]) as img:
+            width, height = img.size
+    except Exception:
+        pass
+
+    success = ffmpeg.create_gif_from_frames_dir(
+        frames_dir, output_path, fps_val, width, height, image_format
+    )
+    if not success or not os.path.isfile(output_path):
+        return (*_no, "❌ GIF compilation failed — check the console for ffmpeg errors.")
+
+    return (
+        gr.update(visible=True, value=output_path),
+        gr.update(visible=False),
+        f"✅ Compiled → **{os.path.basename(output_path)}**",
+    )
 
 
 def on_fe_compile_mp4(frame_paths: list, orig_paths: list, orig_dir: str,

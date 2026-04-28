@@ -45,13 +45,20 @@ def detect_fps(target_path: str) -> float:
                     durations = []
                     for i in range(n):
                         img.seek(i)
-                        d = img.info.get('duration', 40)  # duration in ms, default 40ms = 25fps
+                        d = img.info.get('duration', None)
                         durations.append(d)
-                    avg_ms = sum(durations) / len(durations) if durations else 40
-                    return round(1000.0 / avg_ms, 2) if avg_ms > 0 else 25.0
-        except Exception:
-            pass
-        return 25.0
+                    print(f"[detect_fps] WebP '{os.path.basename(target_path)}': "
+                          f"{n} frames, raw durations (ms) = {durations}")
+                    # Treat None or 0 as 100 ms (browsers use ~100 ms as the
+                    # effective minimum for animated WebP, similar to GIF).
+                    cleaned = [(d if d and d > 0 else 100) for d in durations]
+                    avg_ms = sum(cleaned) / len(cleaned)
+                    fps = round(1000.0 / avg_ms, 2)
+                    print(f"[detect_fps] avg_ms={avg_ms:.1f} → fps={fps}")
+                    return fps
+        except Exception as exc:
+            print(f"[detect_fps] WebP duration read failed: {exc}")
+        return 10.0  # safe fallback: 100 ms per frame
     fps = 24.0
     cap = cv2.VideoCapture(target_path)
     if cap.isOpened():

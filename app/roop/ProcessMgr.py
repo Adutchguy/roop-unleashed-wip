@@ -87,9 +87,9 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.output_to_file = None
         self.output_to_cam = None
-        # Manual masking (include = force swap, exclude = keep original)
-        self.include_mask = None
-        self.exclude_mask = None
+        # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
+        #                                                  'ref_kps': arr, 'is_canonical': bool}}
+        self.face_masks = {}
 
         if progress is not None:
             self.progress_gradio = progress
@@ -135,18 +135,16 @@ class ProcessMgr():
         self.processors = newprocessors
 
         # ── Parse manual mask JSON (written by the canvas masking modal) ──────
-        # Format: '{"include": "data:image/png;base64,...", "exclude": "..."}'
-        # include mask → float32 H×W, 1.0 = force swap in this pixel
-        # exclude mask → float32 H×W, 1.0 = keep original in this pixel
-        self.include_mask = None
-        self.exclude_mask = None
-        self.mask_ref_kps = None
-        self.mask_is_canonical = False
+        # New format: {"0": {"exclude": "data:...", "canonical": true}, "1": {...}}
+        # Old format: {"exclude": "data:...", "canonical": true}  (treated as faceset 0)
+        # face_masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
+        #                                   'ref_kps': arr, 'is_canonical': bool}}
+        self.face_masks = {}
         mask_src = self.options.imagemask
         if isinstance(mask_src, str) and mask_src.strip().startswith('{'):
             try:
                 import json as _json, base64 as _b64
-                mask_data = _json.loads(mask_src)
+                raw = _json.loads(mask_src)
                 blend_amount = 20.0
                 if self.input_face_datas and len(self.input_face_datas[0].faces) > 0:
                     blend_amount = self.input_face_datas[0].faces[0].mask_offsets[4]
@@ -165,28 +163,45 @@ class ProcessMgr():
                     except Exception:
                         return None
 
-                self.include_mask = _decode_mask(mask_data.get('include'))
-                self.exclude_mask = _decode_mask(mask_data.get('exclude'))
+                def _parse_one_faceset_entry(mask_data):
+                    """Decode one faceset's mask dict → face_masks entry, or None."""
+                    exclude_mask = _decode_mask(mask_data.get('exclude'))
+                    include_mask = _decode_mask(mask_data.get('include'))
+                    if exclude_mask is None and include_mask is None:
+                        return None
+                    ref_kps = None
+                    raw_kps = mask_data.get('ref_kps')
+                    if raw_kps:
+                        try:
+                            ref_kps = np.array(raw_kps, dtype=np.float32)
+                        except Exception:
+                            pass
+                    return {
+                        'exclude_mask': exclude_mask,
+                        'include_mask': include_mask,
+                        'ref_kps': ref_kps,
+                        'is_canonical': bool(mask_data.get('canonical', False)),
+                    }
 
-                # Face-tracking: load 5-point reference keypoints if present.
-                # These were embedded by the JS mask editor when the mask was saved.
-                self.mask_ref_kps = None
-                ref_kps = mask_data.get('ref_kps')
-                if ref_kps:
-                    try:
-                        self.mask_ref_kps = np.array(ref_kps, dtype=np.float32)  # shape (5, 2)
-                    except Exception:
-                        self.mask_ref_kps = None
-                # Canonical masks were painted directly in face-crop space by the updated editor.
-                # No warp is needed — just resize to subsample_size at apply time.
-                self.mask_is_canonical = bool(mask_data.get('canonical', False))
+                # Detect format: new = all top-level keys are digit strings.
+                top_keys = list(raw.keys())
+                is_new_format = bool(top_keys) and all(k.isdigit() for k in top_keys)
+                if is_new_format:
+                    for k, v in raw.items():
+                        if isinstance(v, dict):
+                            entry = _parse_one_faceset_entry(v)
+                            if entry is not None:
+                                self.face_masks[int(k)] = entry
+                else:
+                    # Old flat format → treat as faceset 0
+                    entry = _parse_one_faceset_entry(raw)
+                    if entry is not None:
+                        self.face_masks[0] = entry
+
             except Exception as e:
                 print(f"[ProcessMgr] Failed to parse mask JSON: {e}")
-                self.include_mask = None
-                self.exclude_mask = None
-                self.mask_ref_kps = None
-                self.mask_is_canonical = False
-        # Clear legacy imagemask — we only use include_mask / exclude_mask now
+                self.face_masks = {}
+        # Clear legacy imagemask — we only use face_masks now
         self.options.imagemask = None
 
         self.options.frame_processing = False
@@ -520,22 +535,25 @@ class ProcessMgr():
             return num_faces_found, frame
 
         # ── Apply manual include / exclude masks ────────────────────────────
-        # Canonical masks (mask_is_canonical=True) and ref_kps warp masks are
-        # both applied inside process_face in canonical face-crop space.
-        # This fallback static full-frame blend only runs for genuinely legacy
-        # masks (no ref_kps, not canonical) saved before tracking was added.
-        if (self.include_mask is not None or self.exclude_mask is not None) and self.mask_ref_kps is None and not self.mask_is_canonical:
+        # Canonical masks and ref_kps warp masks are applied inside process_face.
+        # This fallback full-frame blend only runs for genuinely legacy masks
+        # (no ref_kps, not canonical) saved before face-crop tracking was added.
+        # Uses faceset-0 entry as the representative mask for the whole frame.
+        _legacy_fm = self.face_masks.get(0)
+        if (_legacy_fm is not None
+                and _legacy_fm.get('ref_kps') is None
+                and not _legacy_fm.get('is_canonical', False)):
             h, w = frame.shape[:2]
             combined = np.zeros((h, w), dtype=np.float32)
 
-            if self.exclude_mask is not None:
-                exc = self.exclude_mask
+            exc = _legacy_fm.get('exclude_mask')
+            if exc is not None:
                 if exc.shape[:2] != (h, w):
                     exc = cv2.resize(exc, (w, h), interpolation=cv2.INTER_LINEAR)
                 combined = np.maximum(combined, exc)
 
-            if self.include_mask is not None:
-                inc = self.include_mask
+            inc = _legacy_fm.get('include_mask')
+            if inc is not None:
                 if inc.shape[:2] != (h, w):
                     inc = cv2.resize(inc, (w, h), interpolation=cv2.INTER_LINEAR)
                 combined = combined * (1.0 - inc)
@@ -714,17 +732,24 @@ class ProcessMgr():
 
         # ── Apply manual mask in canonical face-crop space ────────────────────
         # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]
-        # combined=0 → keep swapped pixels  (fake_frame)    [include / green paint]
+        # combined=0 → keep swapped pixels  (fake_frame)
         #
         # Two modes:
-        #   canonical=True  — mask was painted directly on the face crop; just
-        #                     resize to subsample_size and apply.  Perfect tracking
-        #                     by construction; no warp needed.
-        #   mask_ref_kps    — legacy mask in full-frame coords; warp via M_ref.
-        #                     Uses orig_fh/orig_fw (captured before any rotation
-        #                     rebind) so autorotate_faces doesn't corrupt the dims.
-        if self.include_mask is not None or self.exclude_mask is not None:
-            if self.mask_is_canonical:
+        #   canonical=True  — mask painted directly on face crop; resize to subsample_size.
+        #   ref_kps         — legacy mask in full-frame coords; warp via M_ref.
+        #                     Uses orig_fh/orig_fw so autorotate_faces doesn't corrupt dims.
+        #
+        # face_index selects the per-faceset mask; falls back to faceset 0 when only
+        # one mask was painted (single-face / "first found" scenarios).
+        _fm = self.face_masks.get(face_index)
+        if _fm is None and self.face_masks:
+            _fm = self.face_masks.get(0)
+        if _fm is not None:
+            _exc_mask  = _fm.get('exclude_mask')
+            _inc_mask  = _fm.get('include_mask')
+            _ref_kps   = _fm.get('ref_kps')
+            _canonical = _fm.get('is_canonical', False)
+            if _canonical:
                 try:
                     def _resize_to_ss(mask):
                         if mask is None:
@@ -737,8 +762,8 @@ class ProcessMgr():
                                         interpolation=cv2.INTER_LINEAR)
                         return m8.astype(np.float32) / 255.0
 
-                    exc_can = _resize_to_ss(self.exclude_mask)
-                    inc_can = _resize_to_ss(self.include_mask)
+                    exc_can = _resize_to_ss(_exc_mask)
+                    inc_can = _resize_to_ss(_inc_mask)
 
                     combined_can = np.zeros((subsample_size, subsample_size), dtype=np.float32)
                     if exc_can is not None:
@@ -764,13 +789,13 @@ class ProcessMgr():
                 except Exception as e:
                     print(f"[ProcessMgr] Canonical mask application failed: {e}")
 
-            elif self.mask_ref_kps is not None:
+            elif _ref_kps is not None:
                 try:
                     from roop.face_util import estimate_norm
                     # Use original (pre-rotation-rebind) frame dimensions so that
-                    # mask_ref_kps — which are always in full-frame coords — map correctly.
+                    # ref_kps — which are always in full-frame coords — map correctly.
                     fh, fw = orig_fh, orig_fw
-                    M_ref = estimate_norm(self.mask_ref_kps, subsample_size)
+                    M_ref = estimate_norm(_ref_kps, subsample_size)
 
                     def _to_canonical(mask):
                         if mask is None:
@@ -787,8 +812,8 @@ class ProcessMgr():
                                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                         return c.astype(np.float32) / 255.0
 
-                    exc_can = _to_canonical(self.exclude_mask)
-                    inc_can = _to_canonical(self.include_mask)
+                    exc_can = _to_canonical(_exc_mask)
+                    inc_can = _to_canonical(_inc_mask)
 
                     combined_can = np.zeros((subsample_size, subsample_size), dtype=np.float32)
                     if exc_can is not None:

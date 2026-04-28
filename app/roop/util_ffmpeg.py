@@ -13,9 +13,16 @@ def run_ffmpeg(args: List[str]) -> bool:
     try:
         subprocess.check_output(commands, stderr=subprocess.STDOUT)
         return True
+    except subprocess.CalledProcessError as e:
+        print("Running ffmpeg failed! Commandline:")
+        print (" ".join(commands))
+        if e.output:
+            print("FFmpeg output:")
+            print(e.output.decode(errors='replace'))
     except Exception as e:
         print("Running ffmpeg failed! Commandline:")
         print (" ".join(commands))
+        print(f"Error: {e}")
     return False
 
 
@@ -55,9 +62,53 @@ def join_videos(videos: List[str], dest_filename: str, simple: bool):
 
 
 
+def _extract_frames_from_animated_webp(target_path: str, trim_frame_start, trim_frame_end, temp_directory_path: str) -> bool:
+    """Extract frames from animated WebP using PIL/Pillow.
+
+    FFmpeg's native webp_pipe demuxer skips ANIM/ANMF chunks and cannot decode
+    animated WebP files, producing zero frames.  Pillow handles them correctly.
+    Frames are written as the configured output_image_format (typically png).
+    """
+    import numpy as np
+    import cv2
+    from PIL import Image
+
+    try:
+        with Image.open(target_path) as img:
+            n_frames = getattr(img, 'n_frames', 1)
+            start = int(trim_frame_start) if trim_frame_start is not None else 0
+            end   = int(trim_frame_end)   if trim_frame_end   is not None else n_frames
+            end   = min(end, n_frames)
+
+            frame_num = 1
+            for i in range(start, end):
+                img.seek(i)
+                frame_rgb = np.array(img.convert('RGB'))
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                out_path = os.path.join(
+                    temp_directory_path,
+                    f'{frame_num:06d}.{roop.globals.CFG.output_image_format}',
+                )
+                cv2.imwrite(out_path, frame_bgr)
+                frame_num += 1
+
+        extracted = frame_num - 1
+        print(f'Extracted {extracted} frames from animated WebP via PIL')
+        return extracted > 0
+    except Exception as e:
+        print(f'PIL animated WebP frame extraction failed: {e}')
+        return False
+
+
 def extract_frames(target_path : str, trim_frame_start, trim_frame_end, fps : float) -> bool:
     util.create_temp(target_path)
     temp_directory_path = util.get_temp_directory_path(target_path)
+
+    # FFmpeg's native webp_pipe demuxer cannot decode animated WebP (ANIM/ANMF chunks).
+    # Detect animated webp and fall back to PIL-based extraction.
+    if target_path.lower().endswith('.webp') and util.is_animated_webp(target_path):
+        return _extract_frames_from_animated_webp(target_path, trim_frame_start, trim_frame_end, temp_directory_path)
+
     commands = ['-i', target_path, '-q:v', '1', '-pix_fmt', 'rgb24', ]
     if trim_frame_start is not None and trim_frame_end is not None:
         commands.extend([ '-vf', 'trim=start_frame=' + str(trim_frame_start) + ':end_frame=' + str(trim_frame_end) + ',fps=' + str(fps) ])
@@ -68,12 +119,22 @@ def extract_frames(target_path : str, trim_frame_start, trim_frame_end, fps : fl
 def create_video(target_path: str, dest_filename: str, fps: float = 24.0, temp_directory_path: str = None) -> None:
     if temp_directory_path is None:
         temp_directory_path = util.get_temp_directory_path(target_path)
-    run_ffmpeg(['-r', str(fps), '-i', os.path.join(temp_directory_path, f'%06d.{roop.globals.CFG.output_image_format}'), '-c:v', roop.globals.video_encoder, '-crf', str(roop.globals.video_quality), '-pix_fmt', 'yuv420p', '-vf', 'colorspace=bt709:iall=bt601-6-625:fast=1', '-y', dest_filename])
+    # scale=trunc(iw/2)*2:trunc(ih/2)*2 rounds odd dimensions down to even, which is
+    # required by yuv420p / libx264. Without this, frames with odd width or height
+    # cause ffmpeg to fail silently and produce an empty (corrupt) output file.
+    vf = 'scale=trunc(iw/2)*2:trunc(ih/2)*2,colorspace=bt709:iall=bt601-6-625:fast=1'
+    run_ffmpeg(['-r', str(fps), '-i', os.path.join(temp_directory_path, f'%06d.{roop.globals.CFG.output_image_format}'), '-c:v', roop.globals.video_encoder, '-crf', str(roop.globals.video_quality), '-pix_fmt', 'yuv420p', '-vf', vf, '-y', dest_filename])
     return dest_filename
 
 
-def create_gif_from_video(video_path: str, gif_path):
-    fps = util.detect_fps(video_path)
+def create_gif_from_video(video_path: str, gif_path: str, target_fps: float = None):
+    """Convert a video file to an optimised animated GIF.
+
+    target_fps — if provided, use this frame rate instead of detecting it from
+    the file.  Pass the known fps when converting from an intermediate temp MP4
+    so we don't lose the original source timing through a second detect_fps call.
+    """
+    fps = target_fps if target_fps is not None else util.detect_fps(video_path)
     width, height = util.detect_dimensions(video_path)
 
     # Keep the larger dimension at its original size; auto-scale the other.
@@ -213,7 +274,10 @@ def apply_media_transforms_webp(input_path: str, output_path: str,
     codec   = roop.globals.video_encoder   or 'libx264'
     quality = roop.globals.video_quality   if roop.globals.video_quality is not None else 14
 
-    vf = ','.join(vf_filters)
+    # yuv420p requires even dimensions — round odd width/height down before encoding.
+    even_scale = 'scale=trunc(iw/2)*2:trunc(ih/2)*2'
+    user_vf = ','.join(vf_filters)
+    vf = f'{user_vf},{even_scale}' if user_vf else even_scale
     cmd = [
         'ffmpeg', '-hide_banner', '-hwaccel', 'auto', '-y',
         '-loglevel', roop.globals.log_level,
@@ -231,15 +295,22 @@ def apply_media_transforms_webp(input_path: str, output_path: str,
     print(f"apply_media_transforms_webp: piping {len(frames)} frames @ {fps} fps")
     print(' '.join(cmd))
 
+    # Concatenate all raw frame bytes up front so we can pass them via
+    # communicate(input=...).  communicate() uses internal threads to write
+    # stdin and drain stderr simultaneously, preventing the deadlock that occurs
+    # when -loglevel debug fills the stderr pipe while we're still writing stdin.
+    raw_data = b''.join(f.tobytes() for f in frames)
+
     try:
-        popen_params = {'stdin': subprocess.PIPE, 'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+        popen_params = {
+            'stdin':  subprocess.PIPE,
+            'stdout': subprocess.DEVNULL,   # we don't read stdout
+            'stderr': subprocess.PIPE,
+        }
         if os.name == 'nt':
             popen_params['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
         proc = subprocess.Popen(cmd, **popen_params)
-        for frame in frames:
-            proc.stdin.write(frame.tobytes())
-        proc.stdin.close()
-        _, stderr = proc.communicate()
+        _, stderr = proc.communicate(input=raw_data)
         if proc.returncode != 0:
             print(f"apply_media_transforms_webp ffmpeg error:\n{stderr.decode(errors='replace')}")
         return proc.returncode == 0
@@ -257,13 +328,15 @@ def create_video_from_frames_dir(frames_dir: str, output_path: str, fps: float,
     """
     codec   = roop.globals.video_encoder   or 'libx264'
     quality = roop.globals.video_quality   if roop.globals.video_quality is not None else 14
+    # scale=trunc(iw/2)*2:trunc(ih/2)*2 rounds odd dimensions down to even, required by yuv420p.
+    vf = 'scale=trunc(iw/2)*2:trunc(ih/2)*2,colorspace=bt709:iall=bt601-6-625:fast=1'
     return run_ffmpeg([
         '-r',    str(fps),
         '-i',    os.path.join(frames_dir, f'%06d.{image_format}'),
         '-c:v',  codec,
         '-crf',  str(quality),
         '-pix_fmt', 'yuv420p',
-        '-vf',   'colorspace=bt709:iall=bt601-6-625:fast=1',
+        '-vf',   vf,
         '-y',    output_path,
     ])
 

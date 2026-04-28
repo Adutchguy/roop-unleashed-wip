@@ -313,11 +313,13 @@ def live_swap(frame, options):
 
 
 def _parse_per_frame_masks(json_str: str) -> dict:
-    """Parse the JSON string from mask_per_frame_store into a dict keyed by int frame number.
+    """Parse the JSON string from mask_per_frame_store.
 
-    The JS stores {"1": maskJson, "5": maskJson} where maskJson is a dict with optional
-    "include" / "exclude" grayscale PNG data-URLs and "canonical": True.
-    Returns {} when the string is absent, empty, or unparseable.
+    Supports two formats:
+    - New: {"frame": {"facesetIdx": maskData, ...}, ...}
+    - Old: {"frame": maskData, ...}  — backwards compat, wrapped as {"0": maskData}
+
+    Returns {int_frame_num: {int_faceset_idx: maskData}}.
     """
     import json as _json
     if not json_str:
@@ -326,7 +328,21 @@ def _parse_per_frame_masks(json_str: str) -> dict:
         raw = _json.loads(json_str)
         if not isinstance(raw, dict):
             return {}
-        return {int(k): v for k, v in raw.items() if k.isdigit()}
+        result = {}
+        for k, v in raw.items():
+            if not k.isdigit() or not isinstance(v, dict):
+                continue
+            frame_num = int(k)
+            # Detect old flat format: has 'exclude', 'include', or 'canonical' at top level
+            is_old_flat = any(x in v for x in ('exclude', 'include', 'canonical'))
+            if is_old_flat:
+                result[frame_num] = {0: v}
+            else:
+                per_faceset = {int(fk): fv for fk, fv in v.items()
+                               if fk.isdigit() and isinstance(fv, dict)}
+                if per_faceset:
+                    result[frame_num] = per_faceset
+        return result
     except Exception:
         return {}
 
@@ -350,10 +366,12 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
         return
 
     import cv2 as _cv2
+    import json as _json
 
     plugins = get_processing_plugins(masking_engine)
 
-    for frame_num_1, mask_data in per_frame_masks.items():
+    # per_frame_masks: {int_frame_num: {int_faceset_idx: maskData}}
+    for frame_num_1, faceset_masks in per_frame_masks.items():
         idx = frame_num_1 - 1          # convert 1-based → 0-based list index
         if idx < 0 or idx >= len(orig_frame_paths):
             continue
@@ -365,8 +383,11 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
             print(f"[per-frame mask] could not read original {orig_path}")
             continue
 
-        import json as _json
-        mask_json_str = _json.dumps(mask_data) if isinstance(mask_data, dict) else None
+        # Build combined per-faceset mask JSON: {"0": maskData, "1": maskData, ...}
+        # ProcessMgr.initialize detects digit-string top-level keys as new format.
+        combined_mask = {str(fi): fd for fi, fd in faceset_masks.items()
+                         if isinstance(fd, dict)}
+        mask_json_str = _json.dumps(combined_mask) if combined_mask else None
 
         options = ProcessOptions(
             plugins,
@@ -494,12 +515,18 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
                 util.create_temp(v.filename)
                 update_status('Extracting frames...')
-                ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
+                extraction_ok = ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
                 if not roop.globals.processing:
                     end_processing('Processing stopped!')
                     return
 
                 temp_frame_paths = util.get_temp_frame_paths(v.filename)
+                if not temp_frame_paths:
+                    # Frame extraction produced no output — ffmpeg likely failed above.
+                    # Log and skip this video rather than crashing on temp_frame_paths[0].
+                    update_status(f'Frame extraction failed for {os.path.basename(v.filename)}, skipping...')
+                    continue
+
                 # Save unswapped originals BEFORE run_batch overwrites them in-place.
                 # Needed for both keep_frames mode (Frame Editor) and per-frame mask re-processing.
                 per_frame_masks = getattr(roop.globals, 'mask_per_frame', {})
@@ -525,7 +552,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         use_3d_recon=getattr(roop.globals, '_batch_use_3d_recon', False),
                     )
 
-                if roop.globals.wait_after_extraction:
+                if roop.globals.wait_after_extraction and temp_frame_paths:
                     extract_path = os.path.dirname(temp_frame_paths[0])
                     util.open_folder(extract_path)
                     input("Press any key to continue...")
@@ -545,7 +572,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                             import shutil as _shutil
                             _shutil.rmtree(orig_dir, ignore_errors=True)
             else:
-                if util.has_extension(v.filename, ['gif']):
+                if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
                     skip_audio = True
                 else:
                     skip_audio = roop.globals.skip_audio
@@ -558,13 +585,15 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             video_file_name = v.finalname
             if os.path.isfile(video_file_name):
                 destination = ''
-                if util.has_extension(v.filename, ['gif']):
+                if util.has_extension(v.filename, ['gif']) or util.is_animated_webp(v.filename):
                     gifname = util.get_destfilename_from_path(v.filename, roop.globals.output_path, '.gif')
                     destination = util.replace_template(gifname, index=index)
                     pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
                     update_status('Creating final GIF')
-                    ffmpeg.create_gif_from_video(video_file_name, destination)
+                    # Pass fps explicitly so the GIF matches the original source
+                    # timing — avoids a lossy re-detect from the intermediate MP4.
+                    ffmpeg.create_gif_from_video(video_file_name, destination, target_fps=fps)
                     if os.path.isfile(destination):
                         os.remove(video_file_name)
                 else:

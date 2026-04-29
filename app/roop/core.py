@@ -219,8 +219,16 @@ def start() -> None:
     print('Headless batch processing is not implemented - falling through to UI.')
 
 
-def get_processing_plugins(masking_engine):
-    processors = {  "faceswap": {}}
+def get_processing_plugins(masking_engine, swap_model='inswapper'):
+    """Build the processor dict for ProcessOptions.
+
+    swap_model: 'inswapper' uses FaceSwapInsightFace (default);
+                'ghost'     uses FaceSwapGHOST (requires app/models/ghost.onnx).
+    """
+    if swap_model == 'ghost':
+        processors = {"ghost": {}}
+    else:
+        processors = {"faceswap": {}}
     if masking_engine is not None:
         processors.update({masking_engine: {}})
     
@@ -350,7 +358,11 @@ def _parse_per_frame_masks(json_str: str) -> dict:
 def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list,
                                    per_frame_masks: dict, masking_engine, new_clip_text: str,
                                    num_swap_steps: int, restore_original_mouth: bool,
-                                   selected_index: int, use_3d_recon: bool) -> None:
+                                   selected_index: int, use_3d_recon: bool,
+                                   use_source_bank: bool = False,
+                                   use_frontalization: bool = False,
+                                   frontalization_threshold: float = 25.0,
+                                   swap_model: str = 'inswapper') -> None:
     """Re-process frames that have a custom per-frame mask.
 
     Strategy:
@@ -368,7 +380,7 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
     import cv2 as _cv2
     import json as _json
 
-    plugins = get_processing_plugins(masking_engine)
+    plugins = get_processing_plugins(masking_engine, swap_model=swap_model)
 
     # per_frame_masks: {int_frame_num: {int_faceset_idx: maskData}}
     for frame_num_1, faceset_masks in per_frame_masks.items():
@@ -402,6 +414,10 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
             False,
             restore_original_mouth,
             use_3d_recon=use_3d_recon,
+            use_source_bank=use_source_bank,
+            use_frontalization=use_frontalization,
+            frontalization_threshold=frontalization_threshold,
+            swap_model=swap_model,
         )
         result = live_swap(orig_bgr, options)
         if result is not None:
@@ -409,7 +425,9 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
             print(f"[per-frame mask] frame {frame_num_1} reprocessed → {os.path.basename(out_path)}")
 
 
-def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="") -> None:
+def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="",
+                          use_source_bank=False, use_frontalization=False,
+                          frontalization_threshold=25.0, swap_model='inswapper') -> None:
     global clip_text, process_mgr
 
     release_resources()
@@ -421,19 +439,28 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
     # ProcessMgr.initialize decodes it into include_mask / exclude_mask arrays.
     if len(roop.globals.INPUT_FACESETS) <= selected_index:
         selected_index = 0
-    options = ProcessOptions(get_processing_plugins(masking_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
+    options = ProcessOptions(get_processing_plugins(masking_engine, swap_model=swap_model),
+                              roop.globals.distance_threshold, roop.globals.blend_ratio,
                               roop.globals.face_swap_mode, selected_index, new_clip_text, imagemask, num_swap_steps,
                               roop.globals.subsample_size, False, restore_original_mouth,
-                              use_3d_recon=use_3d_recon)
+                              use_3d_recon=use_3d_recon,
+                              use_source_bank=use_source_bank,
+                              use_frontalization=use_frontalization,
+                              frontalization_threshold=frontalization_threshold,
+                              swap_model=swap_model)
     process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
 
     # Stash per-frame mask map and batch options on globals so batch_process can access them
     roop.globals.mask_per_frame = _parse_per_frame_masks(mask_per_frame_json)
-    roop.globals._batch_selected_index = selected_index
-    roop.globals._batch_clip_text      = new_clip_text
-    roop.globals._batch_num_steps      = num_swap_steps
-    roop.globals._batch_restore_mouth  = restore_original_mouth
-    roop.globals._batch_use_3d_recon   = use_3d_recon
+    roop.globals._batch_selected_index    = selected_index
+    roop.globals._batch_clip_text         = new_clip_text
+    roop.globals._batch_num_steps         = num_swap_steps
+    roop.globals._batch_restore_mouth     = restore_original_mouth
+    roop.globals._batch_use_3d_recon      = use_3d_recon
+    roop.globals._batch_use_source_bank   = use_source_bank
+    roop.globals._batch_use_frontalization= use_frontalization
+    roop.globals._batch_front_threshold   = frontalization_threshold
+    roop.globals._batch_swap_model        = swap_model
 
     batch_process(output_method, files, use_new_method)
     return
@@ -550,6 +577,10 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         restore_original_mouth=getattr(roop.globals, '_batch_restore_mouth', False),
                         selected_index=getattr(roop.globals, '_batch_selected_index', 0),
                         use_3d_recon=getattr(roop.globals, '_batch_use_3d_recon', False),
+                        use_source_bank=getattr(roop.globals, '_batch_use_source_bank', False),
+                        use_frontalization=getattr(roop.globals, '_batch_use_frontalization', False),
+                        frontalization_threshold=getattr(roop.globals, '_batch_front_threshold', 25.0),
+                        swap_model=getattr(roop.globals, '_batch_swap_model', 'inswapper'),
                     )
 
                 if roop.globals.wait_after_extraction and temp_frame_paths:

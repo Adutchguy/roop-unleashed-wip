@@ -511,6 +511,7 @@ _SESSION_CFG_KEYS = [
     'face_mask_blend', 'mouth_mask_blend',
     'mouth_top_scale', 'mouth_bottom_scale', 'mouth_left_scale', 'mouth_right_scale',
     'use_3d_recon',
+    'use_source_bank', 'use_frontalization', 'frontalization_threshold', 'swap_model',
 ]
 
 
@@ -545,6 +546,10 @@ def _session_components():
         ui.globals.ui_mouth_left_scale,
         ui.globals.ui_mouth_right_scale,
         ui.globals.ui_chk_use_3d_recon,
+        ui.globals.ui_chk_use_source_bank,
+        ui.globals.ui_chk_use_frontalization,
+        ui.globals.ui_sld_frontalization_threshold,
+        ui.globals.ui_dd_swap_model,
     ]
 
 

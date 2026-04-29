@@ -31,7 +31,6 @@ ui_mask_top = None
 ui_mask_bottom = None
 ui_mask_left = None
 ui_mask_right = None
-ui_mask_erosion = None
 ui_mask_blur = None
 ui_face_mask_blend = None
 ui_mouth_mask_blend = None
@@ -41,6 +40,11 @@ ui_mouth_left_scale = None
 ui_mouth_right_scale = None
 # Occluder artifact restoration controls
 ui_chk_use_3d_recon = None
+# Profile / angle improvement controls
+ui_chk_use_source_bank = None
+ui_chk_use_frontalization = None
+ui_sld_frontalization_threshold = None
+ui_dd_swap_model = None
 
 
 

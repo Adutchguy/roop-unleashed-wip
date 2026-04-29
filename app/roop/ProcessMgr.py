@@ -50,6 +50,7 @@ def pick_queue(queue: Queue[str], queue_per_future: int) -> List[str]:
 class ProcessMgr():
     plugins = {
         'faceswap'          : 'FaceSwapInsightFace',
+        'ghost'             : 'FaceSwapGHOST',
         'mask_clip2seg'     : 'Mask_Clip2Seg',
         'mask_xseg'         : 'Mask_XSeg',
         'codeformer'        : 'Enhance_CodeFormer',
@@ -224,14 +225,47 @@ class ProcessMgr():
                     src_face = get_first_face(src_img)
                     if src_face is None or not hasattr(src_face, 'kps') or src_face.kps is None:
                         continue
-                    src_crop, _ = align_crop(src_img, src_face.kps, 512)
-                    # Store the crop and the source face's 3D landmarks
+                    src_crop, src_M = align_crop(src_img, src_face.kps, 512)
+                    # Store the crop, the source → crop affine M, and the 3D landmarks
                     src_lm68 = None
                     if hasattr(src_face, 'landmark_3d_68') and src_face.landmark_3d_68 is not None:
                         src_lm68 = src_face.landmark_3d_68[:, :2].astype(np.float32)
-                    fs.face_3d = {'src_crop': src_crop, 'src_lm68': src_lm68}
+                    fs.face_3d = {'src_crop': src_crop, 'src_M': src_M, 'src_lm68': src_lm68}
             except Exception as e:
                 print(f"[ProcessMgr] Pose-aware source cache failed: {e}")
+
+        # ── Multi-angle source bank: precompute per-face poses ────────────────
+        # For each face in every FaceSet, estimate its head yaw/pitch from
+        # landmark_3d_68 so process_face() can select the closest-angle source.
+        if getattr(self.options, 'use_source_bank', False):
+            try:
+                import math as _math
+                from roop.face_3d_recon import estimate_pose, decompose_yaw_pitch
+                for fs in self.input_face_datas:
+                    if len(fs.faces) < 2:
+                        # Single-face facesets don't need pose selection
+                        fs.face_poses = None
+                        continue
+                    poses = []
+                    for face in fs.faces:
+                        yaw_d = pitch_d = None
+                        if (hasattr(face, 'landmark_3d_68')
+                                and face.landmark_3d_68 is not None):
+                            try:
+                                lm = face.landmark_3d_68[:, :2].astype(np.float32)
+                                rvec, _ = estimate_pose(lm, 512)
+                                y, p = decompose_yaw_pitch(rvec)
+                                yaw_d = _math.degrees(y)
+                                pitch_d = _math.degrees(p)
+                            except Exception:
+                                pass
+                        poses.append((yaw_d, pitch_d))
+                    fs.face_poses = poses
+                    valid = [(y, p) for (y, p) in poses if y is not None]
+                    print(f"[SourceBank] FaceSet with {len(fs.faces)} faces — "
+                          f"poses: {[(f'{y:.1f}°', f'{p:.1f}°') for y,p in valid]}")
+            except Exception as e:
+                print(f"[ProcessMgr] Source bank pose precomputation failed: {e}")
 
 
     def run_batch(self, source_files, target_files, threads:int = 1):
@@ -620,10 +654,8 @@ class ProcessMgr():
         orig_fh, orig_fw = frame.shape[:2]
 
         enhanced_frame = None
-        if len(self.input_face_datas) > 0:
-            inputface = self.input_face_datas[face_index].faces[0]
-        else:
-            inputface = None
+        # inputface is assigned after pose computation below (supports source bank)
+        inputface = None
 
         rotation_action = None
         if roop.globals.autorotate_faces:
@@ -646,20 +678,63 @@ class ProcessMgr():
                     frame = rotcutframe
                     target_face = rotface
 
-        model_output_size = 128
-        subsample_size = self.options.subsample_size
-        subsample_total = subsample_size // model_output_size
-        aligned_img, M = align_crop(frame, target_face.kps, subsample_size)
+        # ── Model output size (dynamic per swap processor) ────────────────────
+        # GHOST uses 256 × 256; inswapper uses 128 × 128.
+        swap_p = next((p for p in self.processors if p.type == 'swap'), None)
+        model_output_size = getattr(swap_p, 'model_output_size', 128)
 
+        subsample_size = self.options.subsample_size
+        # Ensure subsample_size is an integer multiple of model_output_size
+        if subsample_size < model_output_size:
+            subsample_size = model_output_size
+        subsample_total = subsample_size // model_output_size
+
+        aligned_img, M = align_crop(frame, target_face.kps, subsample_size)
         fake_frame = aligned_img
         target_face.matrix = M
 
-        # ── 3D source pose matching ───────────────────────────────────────────
-        # If enabled, render the source face from the target head pose and
-        # ── Pose-aware source embedding ───────────────────────────────────────
-        # Warp the source crop to approximate the target head pose, then
-        # re-detect the face in the warped version to get a posed ArcFace
-        # embedding.  Uses only insightface landmarks — no extra downloads.
+        # ── Shared landmark / pose computation ────────────────────────────────
+        # Computed once and reused by source-bank selection, 3D recon, and
+        # frontalization.  Guards against missing landmark_3d_68 gracefully.
+        import math as _math
+        tgt_lm68_crop = None
+        tgt_yaw_deg   = 0.0
+        tgt_pitch_deg = 0.0
+        try:
+            if (hasattr(target_face, 'landmark_3d_68')
+                    and target_face.landmark_3d_68 is not None):
+                from roop.face_3d_recon import (
+                    landmarks_to_crop_space, estimate_pose, decompose_yaw_pitch,
+                )
+                tgt_lm68_crop = landmarks_to_crop_space(target_face.landmark_3d_68, M)
+                rvec, _ = estimate_pose(tgt_lm68_crop, subsample_size)
+                ty, tp  = decompose_yaw_pitch(rvec)
+                tgt_yaw_deg   = _math.degrees(ty)
+                tgt_pitch_deg = _math.degrees(tp)
+        except Exception:
+            pass   # landmarks unavailable — features that need pose will no-op
+
+        # ── Option 1: Multi-angle source bank ────────────────────────────────
+        # Select the source face whose pose best matches this target frame.
+        # Falls back to faces[0] when the feature is off or poses are absent.
+        if len(self.input_face_datas) > 0:
+            fs = self.input_face_datas[face_index]
+            inputface = fs.faces[0]   # default
+            if (getattr(self.options, 'use_source_bank', False)
+                    and len(fs.faces) > 1
+                    and fs.face_poses is not None):
+                best_idx  = 0
+                best_dist = float('inf')
+                for i, (yaw_d, pitch_d) in enumerate(fs.face_poses):
+                    if yaw_d is None:
+                        continue
+                    dist = (tgt_yaw_deg - yaw_d) ** 2 + (tgt_pitch_deg - pitch_d) ** 2
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx  = i
+                inputface = fs.faces[best_idx]
+
+        # ── 3D source pose matching (existing, uses shared tgt_lm68_crop) ─────
         if (getattr(self.options, 'use_3d_recon', False)
                 and inputface is not None
                 and len(self.input_face_datas) > face_index
@@ -670,28 +745,16 @@ class ProcessMgr():
 
                 face_data = self.input_face_datas[face_index].face_3d
                 src_crop_512 = face_data.get('src_crop')
-                src_lm68_img = face_data.get('src_lm68')   # (68,2) in source image space
-
-                # Map target landmarks into the align_crop (subsample_size) space
-                tgt_lm68_crop = None
-                if hasattr(target_face, 'landmark_3d_68') and target_face.landmark_3d_68 is not None:
-                    tgt_lm68_crop = landmarks_to_crop_space(
-                        target_face.landmark_3d_68, M
-                    )
+                src_lm68_img = face_data.get('src_lm68')
 
                 if src_crop_512 is not None and tgt_lm68_crop is not None:
-                    # Build source landmarks in the same subsample_size space.
-                    # The source crop is always a centred 512×512 square, so
-                    # landmarks sit at ~subsample_size/2 in crop space; we use
-                    # a coarse approximation for pose estimation — the yaw
-                    # direction is what matters most.
-                    src_lm68_crop = src_lm68_img if src_lm68_img is not None else (
-                        np.full((68, 2), subsample_size / 2.0, dtype=np.float32)
-                    )
-                    # Scale src_lm68 if they're in 512-space but subsample_size differs
-                    if src_lm68_img is not None:
-                        scale = subsample_size / 512.0
-                        src_lm68_crop = src_lm68_img * scale
+                    src_M_512 = face_data.get('src_M')
+                    if src_lm68_img is not None and src_M_512 is not None:
+                        lm_512 = landmarks_to_crop_space(src_lm68_img, src_M_512)
+                        src_lm68_crop = lm_512 * (subsample_size / 512.0)
+                    else:
+                        src_lm68_crop = np.full((68, 2), subsample_size / 2.0,
+                                                dtype=np.float32)
 
                     recon = Face3DRecon.instance()
                     src_crop_ss = cv2.resize(src_crop_512, (subsample_size, subsample_size))
@@ -699,8 +762,17 @@ class ProcessMgr():
                         src_crop_ss, src_lm68_crop, tgt_lm68_crop,
                         img_size=subsample_size,
                     )
+                    try:
+                        from roop.face_3d_recon import estimate_pose, decompose_yaw_pitch
+                        sv, _ = estimate_pose(src_lm68_crop, subsample_size)
+                        sy, sp = decompose_yaw_pitch(sv)
+                        dy = tgt_yaw_deg - _math.degrees(sy)
+                        dp = tgt_pitch_deg - _math.degrees(sp)
+                        if abs(dy) > 15 or abs(dp) > 15:
+                            print(f"[3DRecon] pose correction: Δyaw={dy:+.1f}° Δpitch={dp:+.1f}°")
+                    except Exception:
+                        pass
 
-                    # Re-detect the face in the posed crop to get its embedding
                     posed_face = _gff(posed_crop)
                     if (posed_face is not None
                             and hasattr(posed_face, 'normed_embedding')
@@ -712,10 +784,36 @@ class ProcessMgr():
             except Exception as e:
                 print(f"[ProcessMgr] Pose-aware embedding failed: {e}")
 
+        # ── Option 2: Target frontalization ──────────────────────────────────
+        # Warp the aligned crop toward frontal before the swap, then apply
+        # the inverse affine after the swap to restore the original pose.
+        M_frontal = None
+        aligned_for_swap = aligned_img   # may be replaced by frontalized version
+
+        if (getattr(self.options, 'use_frontalization', False)
+                and tgt_lm68_crop is not None
+                and inputface is not None):
+            try:
+                ft_threshold = getattr(self.options, 'frontalization_threshold', 25.0)
+                if abs(tgt_yaw_deg) > ft_threshold or abs(tgt_pitch_deg) > ft_threshold:
+                    from roop.face_frontalize import frontalize_crop
+                    # frontal_lm68=None → auto-computed via solvePnP re-projection
+                    frontalized, M_frontal = frontalize_crop(
+                        aligned_img, tgt_lm68_crop,
+                    )
+                    if M_frontal is not None:
+                        aligned_for_swap = frontalized
+                        print(f"[Frontalize] Δyaw={tgt_yaw_deg:+.1f}° Δpitch={tgt_pitch_deg:+.1f}°"
+                              f" — frontalization applied")
+            except Exception as e:
+                print(f"[ProcessMgr] Frontalization failed: {e}")
+
+        fake_frame = aligned_for_swap
+
         for p in self.processors:
             if p.type == 'swap':
                 swap_result_frames = []
-                subsample_frames = self.implode_pixel_boost(aligned_img, model_output_size, subsample_total)
+                subsample_frames = self.implode_pixel_boost(aligned_for_swap, model_output_size, subsample_total)
                 for sliced_frame in subsample_frames:
                     for _ in range(0, self.options.num_swap_steps):
                         sliced_frame = self.prepare_crop_frame(sliced_frame)
@@ -725,6 +823,13 @@ class ProcessMgr():
                 fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
                 scale_factor = 0.0
+                # ── Defrontalize after swap (Option 2) ────────────────────────
+                if M_frontal is not None:
+                    try:
+                        from roop.face_frontalize import defrontalize_crop
+                        fake_frame = defrontalize_crop(fake_frame, M_frontal)
+                    except Exception as e:
+                        print(f"[ProcessMgr] Defrontalization failed: {e}")
             elif p.type == 'mask':
                 fake_frame = self.process_mask(p, aligned_img, fake_frame)
             else:
@@ -1022,8 +1127,15 @@ class ProcessMgr():
         return mask
 
 
+    def _active_swap_model_type(self) -> str:
+        """Return 'ghost' if the active swap processor is GHOST, else 'inswapper'."""
+        for p in self.processors:
+            if p.type == 'swap':
+                return getattr(p, 'processorname', 'faceswap')
+        return 'faceswap'
+
     def prepare_crop_frame(self, swap_frame):
-        model_type = 'inswapper'
+        model_type = self._active_swap_model_type()
         model_mean = [0.0, 0.0, 0.0]
         model_standard_deviation = [1.0, 1.0, 1.0]
 
@@ -1038,10 +1150,12 @@ class ProcessMgr():
 
 
     def normalize_swap_frame(self, swap_frame):
-        model_type = 'inswapper'
+        model_type = self._active_swap_model_type()
         swap_frame = swap_frame.transpose(1, 2, 0)
         if model_type == 'ghost':
-            swap_frame = (swap_frame * 127.5 + 127.5).round()
+            # Reverse mean=0.5/std=0.5 normalisation; clip before scaling
+            swap_frame = (swap_frame * 0.5 + 0.5).clip(0, 1)
+            swap_frame = (swap_frame * 255.0).round()
         else:
             swap_frame = (swap_frame * 255.0).round()
         swap_frame = swap_frame[:, :, ::-1]

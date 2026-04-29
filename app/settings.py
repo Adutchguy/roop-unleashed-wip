@@ -69,6 +69,13 @@ class Settings:
         self.mouth_right_scale = self.default_get(data, 'mouth_right_scale', 1.0)
         # 3D source pose matching
         self.use_3d_recon = self.default_get(data, 'use_3d_recon', False)
+        # Multi-angle source bank (Option 1)
+        self.use_source_bank = self.default_get(data, 'use_source_bank', False)
+        # Target frontalization (Option 2)
+        self.use_frontalization = self.default_get(data, 'use_frontalization', False)
+        self.frontalization_threshold = self.default_get(data, 'frontalization_threshold', 30.0)
+        # Swap model (Option 4): 'inswapper' | 'ghost'
+        self.swap_model = self.default_get(data, 'swap_model', 'inswapper')
 
 
 
@@ -124,6 +131,13 @@ class Settings:
             'mouth_right_scale': self.mouth_right_scale,
             # 3D source pose matching
             'use_3d_recon': self.use_3d_recon,
+            # Multi-angle source bank
+            'use_source_bank': self.use_source_bank,
+            # Target frontalization
+            'use_frontalization': self.use_frontalization,
+            'frontalization_threshold': self.frontalization_threshold,
+            # Swap model
+            'swap_model': self.swap_model,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

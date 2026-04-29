@@ -81,6 +81,33 @@ def faceswap_tab():
                             interactive=True,
                             info="Warps the source face to approximate the target head pose before embedding — improves profile and angled swaps.",
                         )
+                        chk_use_source_bank = gr.Checkbox(
+                            label="🎯 Multi-angle source bank",
+                            value=roop.globals.CFG.use_source_bank,
+                            interactive=True,
+                            info="When a faceset has multiple source images, auto-selects the one whose pose best matches each target frame. Load a .fsz file with front + profile photos to use this.",
+                        )
+                        chk_use_frontalization = gr.Checkbox(
+                            label="🏛 Frontalize before swap",
+                            value=False,
+                            interactive=False,
+                            visible=False,
+                        )
+                        sld_frontalization_threshold = gr.Slider(
+                            0.0, 90.0,
+                            value=30.0,
+                            step=1.0,
+                            label="Frontalization threshold (°)",
+                            interactive=False,
+                            visible=False,
+                        )
+                        dd_swap_model = gr.Dropdown(
+                            choices=["inswapper"],
+                            value="inswapper",
+                            label="🔀 Swap model",
+                            interactive=False,
+                            visible=False,
+                        )
                         mask_top = gr.Slider(
                             0, 2.0, value=roop.globals.CFG.mask_top,
                             label="Offset Face Top", step=0.01, interactive=True,
@@ -256,6 +283,10 @@ def faceswap_tab():
     ui.globals.ui_chk_showmaskoffsets = chk_showmaskoffsets
     ui.globals.ui_chk_restoreoriginalmouth = chk_restoreoriginalmouth
     ui.globals.ui_chk_use_3d_recon = chk_use_3d_recon
+    ui.globals.ui_chk_use_source_bank = chk_use_source_bank
+    ui.globals.ui_chk_use_frontalization = chk_use_frontalization
+    ui.globals.ui_sld_frontalization_threshold = sld_frontalization_threshold
+    ui.globals.ui_dd_swap_model = dd_swap_model
     ui.globals.ui_mask_top = mask_top
     ui.globals.ui_mask_bottom = mask_bottom
     ui.globals.ui_mask_left = mask_left
@@ -269,7 +300,8 @@ def faceswap_tab():
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, mask_json_store, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale,
-                        chk_use_3d_recon, mask_per_frame_store]
+                        chk_use_3d_recon, mask_per_frame_store,
+                        chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model]
     previewoutputs = [previewimage, preview_frame_num, original_frame_img]
     input_faces.select(on_select_input_face, None, None).success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     
@@ -309,7 +341,8 @@ def faceswap_tab():
     start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, mask_json_store,
-                    chk_use_3d_recon, mask_per_frame_store],
+                    chk_use_3d_recon, mask_per_frame_store,
+                    chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model],
         outputs=[bt_start, bt_stop], show_progress='full')
 
     bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop], queue=False)
@@ -401,6 +434,8 @@ def faceswap_tab():
     num_swap_steps.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     ui.globals.ui_upscale.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_use_3d_recon.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    chk_use_source_bank.change(fn=on_use_source_bank_changed, inputs=[chk_use_source_bank], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    # chk_use_frontalization, sld_frontalization_threshold, dd_swap_model are hidden/disabled
 
     bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[target_faces, selected_face_detection])
     set_frame_start.click(fn=on_set_frame, inputs=[set_frame_start, preview_frame_num], outputs=[text_frame_clip])
@@ -439,16 +474,32 @@ def on_mouth_left_scale_changed(value):
 def on_mouth_right_scale_changed(value):
     set_mask_offset(9, value)
 
-
 def set_mask_offset(index, mask_offset):
     global SELECTED_INPUT_FACE_INDEX
 
     if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
         offs = roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
+        # Indices 6-9 are mouth scales with a default of 1.0 — pad correctly.
         while len(offs) < 10:
             offs.append(1.0)
         offs[index] = mask_offset
         roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = offs
+
+def on_use_source_bank_changed(value):
+    roop.globals.CFG.use_source_bank = value
+    roop.globals.CFG.save()
+
+def on_use_frontalization_changed(value):
+    roop.globals.CFG.use_frontalization = value
+    roop.globals.CFG.save()
+
+def on_frontalization_threshold_changed(value):
+    roop.globals.CFG.frontalization_threshold = value
+    roop.globals.CFG.save()
+
+def on_swap_model_changed(value):
+    roop.globals.CFG.swap_model = value
+    roop.globals.CFG.save()
 
 def on_mask_engine_changed(mask_engine):
     if mask_engine == "Clip2Seg":
@@ -498,7 +549,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                             roop.globals.CFG.mouth_right_scale,
                         ]
                         face_set.faces.append(face)
-                        if is_first: 
+                        if is_first:
                             image = util.convert_to_gradio(f[1])
                             ui.globals.ui_input_thumbs.append(image)
                             is_first = False
@@ -791,7 +842,9 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None):
 
 def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection, face_distance, blend_ratio,
                               selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
-                              use_3d_recon=False, mask_per_frame_json=""):
+                              use_3d_recon=False, mask_per_frame_json="",
+                              use_source_bank=False, use_frontalization=False,
+                              frontalization_threshold=25.0, swap_model='inswapper'):
     global SELECTED_INPUT_FACE_INDEX, current_video_fps, _last_swapped_preview, _last_preview_options
 
     from roop.core import live_swap, get_processing_plugins
@@ -833,7 +886,7 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
             roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = list(mask_offsets)
         mask_offsets = roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
         while len(mask_offsets) < 10:
-            mask_offsets.append(1.0)
+            mask_offsets.append(1.0)   # indices 6-9 are mouth scales, default 1.0
 
     timeinfo = '0:00:00'
     if files is None or selected_preview_index >= len(files) or frame_num is None:
@@ -883,9 +936,14 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     if len(roop.globals.INPUT_FACESETS) <= face_index:
         face_index = 0
 
-    options = ProcessOptions(get_processing_plugins(mask_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
+    options = ProcessOptions(get_processing_plugins(mask_engine, swap_model=swap_model),
+                              roop.globals.distance_threshold, roop.globals.blend_ratio,
                               roop.globals.face_swap_mode, face_index, clip_text, mask_json or None, num_steps, roop.globals.subsample_size, show_face_area, restore_original_mouth,
-                              use_3d_recon=use_3d_recon)
+                              use_3d_recon=use_3d_recon,
+                              use_source_bank=use_source_bank,
+                              use_frontalization=use_frontalization,
+                              frontalization_threshold=frontalization_threshold,
+                              swap_model=swap_model)
     # Store so FBF frame navigation can regenerate swap previews for arbitrary frames.
     _last_preview_options = options
 
@@ -2040,7 +2098,10 @@ def translate_swap_mode(dropdown_text):
 
 def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
                 selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate, restore_original_mouth, num_swap_steps, upsample, mask_json,
-                use_3d_recon=False, mask_per_frame_json="", progress=gr.Progress()):
+                use_3d_recon=False, mask_per_frame_json="",
+                use_source_bank=False, use_frontalization=False,
+                frontalization_threshold=25.0, swap_model='inswapper',
+                progress=gr.Progress()):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
     global is_processing, list_files_process
@@ -2085,7 +2146,11 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
                           use_3d_recon=use_3d_recon,
-                          mask_per_frame_json=mask_per_frame_json or "")
+                          mask_per_frame_json=mask_per_frame_json or "",
+                          use_source_bank=use_source_bank,
+                          use_frontalization=use_frontalization,
+                          frontalization_threshold=frontalization_threshold,
+                          swap_model=swap_model)
     is_processing = False
     yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
 

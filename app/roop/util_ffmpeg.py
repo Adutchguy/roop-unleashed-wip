@@ -9,19 +9,28 @@ from typing import List, Any
 def run_ffmpeg(args: List[str]) -> bool:
     commands = ['ffmpeg', '-hide_banner', '-hwaccel', 'auto', '-y', '-loglevel', roop.globals.log_level]
     commands.extend(args)
-    print ("Running ffmpeg")
+    print("Running ffmpeg")
     try:
-        subprocess.check_output(commands, stderr=subprocess.STDOUT)
+        kwargs: dict = {
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.STDOUT,
+        }
+        # CREATE_NO_WINDOW prevents the asyncio ProactorEventLoop on Windows from
+        # raising ConnectionResetError (WinError 10054) when the subprocess pipe closes.
+        if os.name == 'nt':
+            kwargs['creationflags'] = 0x08000000
+        result = subprocess.run(commands, **kwargs)
+        if result.returncode != 0:
+            print("Running ffmpeg failed! Commandline:")
+            print(" ".join(commands))
+            if result.stdout:
+                print("FFmpeg output:")
+                print(result.stdout.decode(errors='replace'))
+            return False
         return True
-    except subprocess.CalledProcessError as e:
-        print("Running ffmpeg failed! Commandline:")
-        print (" ".join(commands))
-        if e.output:
-            print("FFmpeg output:")
-            print(e.output.decode(errors='replace'))
     except Exception as e:
         print("Running ffmpeg failed! Commandline:")
-        print (" ".join(commands))
+        print(" ".join(commands))
         print(f"Error: {e}")
     return False
 
@@ -366,30 +375,34 @@ def create_gif_from_frames_dir(frames_dir: str, output_path: str, fps: float,
     ])
 
 
-def restore_audio(intermediate_video: str, original_video: str, trim_frame_start, trim_frame_end, final_video : str) -> None:
-	fps = util.detect_fps(original_video)
-	commands = [ '-i', intermediate_video ]
-	if trim_frame_start is None and trim_frame_end is None:
-		commands.extend([ '-c:a', 'copy' ])
-	else:
-		# if trim_frame_start is not None:
-		# 	start_time = trim_frame_start / fps
-		# 	commands.extend([ '-ss', format(start_time, ".2f")])
-		# else:
-		# 	commands.extend([ '-ss', '0' ])
-		# if trim_frame_end is not None:
-		# 	end_time = trim_frame_end / fps
-		# 	commands.extend([ '-to', format(end_time, ".2f")])
-		# commands.extend([ '-c:a', 'aac' ])
-		if trim_frame_start is not None:
-			start_time = trim_frame_start / fps
-			commands.extend([ '-ss', format(start_time, ".2f")])
-		else:
-			commands.extend([ '-ss', '0' ])
-		if trim_frame_end is not None:
-			end_time = trim_frame_end / fps
-			commands.extend([ '-to', format(end_time, ".2f")])
-		commands.extend([ '-i', original_video, "-c",  "copy" ])
+def restore_audio(intermediate_video: str, original_video: str, trim_frame_start, trim_frame_end, final_video: str) -> bool:
+    """Mux audio from *original_video* into *intermediate_video*, writing *final_video*.
 
-	commands.extend([ '-map', '0:v:0', '-map', '1:a:0?', '-shortest', final_video ])
-	run_ffmpeg(commands)
+    Uses -map 0:v:0 (video from the processed clip) and -map 1:a:0? (audio from
+    the original source, optional so it silently succeeds on source-less files).
+    trim_frame_start / trim_frame_end are used to seek the audio source to the
+    correct position when the original was trimmed before processing.
+    Returns True on success, False on failure.
+    """
+    fps = util.detect_fps(original_video)
+
+    # Seek the audio source to match any trim that was applied before processing.
+    audio_seek = []
+    if trim_frame_start is not None:
+        audio_seek += ['-ss', format(trim_frame_start / fps, ".2f")]
+    else:
+        audio_seek += ['-ss', '0']
+    if trim_frame_end is not None:
+        audio_seek += ['-to', format(trim_frame_end / fps, ".2f")]
+
+    commands = (
+        ['-i', intermediate_video]
+        + audio_seek
+        + ['-i', original_video,
+           '-c', 'copy',
+           '-map', '0:v:0',
+           '-map', '1:a:0?',
+           '-shortest',
+           final_video]
+    )
+    return run_ffmpeg(commands)

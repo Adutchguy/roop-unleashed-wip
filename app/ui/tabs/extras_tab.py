@@ -257,18 +257,6 @@ def extras_tab(bt_destfiles=None):
                 "into a video or GIF.  No face-swap is applied._"
             )
 
-        # ── Reprocess (face-swap pipeline from originals) ───────────
-        with gr.Group():
-            gr.Markdown("#### Reprocess (Face Swap)")
-            with gr.Row(variant="panel"):
-                fe_compile_mp4_btn = gr.Button("🎬 Reprocess → MP4", scale=2)
-                fe_compile_gif_btn = gr.Button("🎞️ Reprocess → GIF", scale=2)
-            gr.Markdown(
-                "_Reruns the face-swap pipeline on each **original** (unswapped) frame "
-                "using saved per-frame mask settings, then compiles.  "
-                "Requires originals and a loaded source face._"
-            )
-
         # ── Compiled output preview ───────────────────────────────────
         with gr.Row():
             fe_out_image = gr.Image(label="Output",
@@ -434,18 +422,6 @@ def extras_tab(bt_destfiles=None):
     fe_compile_current_gif_btn.click(
         fn=on_fe_compile_current_gif,
         inputs=[fe_frames_list, fe_fps, fe_meta],
-        outputs=[fe_out_image, fe_out_video, fe_status],
-    )
-
-    # Reprocess (face-swap pipeline from originals)
-    fe_compile_mp4_btn.click(
-        fn=on_fe_compile_mp4,
-        inputs=[fe_frames_list, fe_orig_list, fe_orig_dir, fe_meta, fe_fps],
-        outputs=[fe_out_image, fe_out_video, fe_status],
-    )
-    fe_compile_gif_btn.click(
-        fn=on_fe_compile_gif,
-        inputs=[fe_frames_list, fe_orig_list, fe_orig_dir, fe_meta, fe_fps],
         outputs=[fe_out_image, fe_out_video, fe_status],
     )
 
@@ -857,6 +833,10 @@ def _fe_extract_drawing(editor_value: dict, src_bgr: np.ndarray):
         layer   = _fit(layer)
         alpha_f = layer[:, :, 3].astype(np.float32) / 255.0
         if alpha_f.max() > 0.02:
+            # Skip if this looks like a full-frame composite
+            # (>50 % opaque pixels means the layer is not a sparse stroke layer).
+            if (alpha_f > 0.1).mean() > 0.5:
+                continue
             # Layer RGB is the raw brush colour — zero background bleed possible
             alpha_soft = cv2.GaussianBlur(alpha_f, (0, 0), sigmaX=4).clip(0.0, 1.0)
             draw_rgb   = np.where(
@@ -1484,90 +1464,6 @@ def _fe_output_dir(frame_paths: list, orig_paths: list) -> str:
     return out or '.'
 
 
-def _fe_apply_mask_to_facesets(mask_data: dict):
-    """Temporarily set mask_offsets on all faces in INPUT_FACESETS from *mask_data*."""
-    offsets = [
-        mask_data.get('top',              roop.globals.CFG.mask_top),
-        mask_data.get('bottom',           roop.globals.CFG.mask_bottom),
-        mask_data.get('left',             roop.globals.CFG.mask_left),
-        mask_data.get('right',            roop.globals.CFG.mask_right),
-        mask_data.get('face_mask_blend',  roop.globals.CFG.face_mask_blend),
-        mask_data.get('mouth_mask_blend', roop.globals.CFG.mouth_mask_blend),
-        mask_data.get('mouth_top',        roop.globals.CFG.mouth_top_scale),
-        mask_data.get('mouth_bottom',     roop.globals.CFG.mouth_bottom_scale),
-        mask_data.get('mouth_left',       roop.globals.CFG.mouth_left_scale),
-        mask_data.get('mouth_right',      roop.globals.CFG.mouth_right_scale),
-    ]
-    for fs in roop.globals.INPUT_FACESETS:
-        for face in fs.faces:
-            face.mask_offsets = list(offsets)
-
-
-def _fe_reprocess_frames(orig_paths: list, orig_dir: str, meta: dict, fps: float):
-    """Reprocess each original frame through live_swap with per-frame masks.
-
-    Returns: (output_frames_dir: str, image_format: str) or (None, None) on failure.
-    The caller is responsible for compiling the output frames.
-    """
-    import tempfile
-    from roop.core import live_swap, get_processing_plugins
-    from roop.ProcessOptions import ProcessOptions
-
-    if not orig_paths or not roop.globals.INPUT_FACESETS:
-        return None, None
-
-    image_format = meta.get('image_format', roop.globals.CFG.output_image_format)
-
-    # Build a stable ProcessOptions for this compile run (mask_json is per-frame)
-    masking_engine = None  # no clip/text mask — per-frame canvas mask is passed via mask_json
-    plugins  = get_processing_plugins(masking_engine)
-
-    out_dir = tempfile.mkdtemp(prefix='fe_reprocess_')
-    ok_count = 0
-    for i, orig_path in enumerate(orig_paths):
-        frame_bgr = cv2.imread(orig_path)
-        if frame_bgr is None:
-            print(f"[FrameEditor] could not read {orig_path}")
-            continue
-
-        basename  = os.path.basename(orig_path)
-        mask_data = util.load_frame_mask(orig_dir, basename) if orig_dir else {}
-
-        # Apply per-frame mask_offsets to facesets
-        _fe_apply_mask_to_facesets(mask_data)
-
-        canvas_mask_json = (mask_data.get('mask_json') or '').strip() or None
-
-        options = ProcessOptions(
-            plugins,
-            roop.globals.distance_threshold,
-            roop.globals.blend_ratio,
-            roop.globals.face_swap_mode,
-            0,                    # face_index
-            None,                 # clip_text
-            canvas_mask_json,
-            1,                    # num_steps
-            roop.globals.subsample_size if hasattr(roop.globals, 'subsample_size') else 128,
-            roop.globals.CFG.show_mask_offsets,
-            roop.globals.CFG.restore_original_mouth,
-            use_3d_recon=False,
-        )
-
-        result = live_swap(frame_bgr, options)
-        if result is None:
-            result = frame_bgr
-
-        out_path = os.path.join(out_dir, f"{i+1:06d}.{image_format}")
-        cv2.imwrite(out_path, result)
-        ok_count += 1
-
-    if ok_count == 0:
-        import shutil
-        shutil.rmtree(out_dir, ignore_errors=True)
-        return None, None
-
-    return out_dir, image_format
-
 
 def on_fe_compile_current_mp4(frame_paths: list, fps, meta: dict):
     """Stitch the current processed frame images directly into an MP4 (no face swap)."""
@@ -1583,9 +1479,21 @@ def on_fe_compile_current_mp4(frame_paths: list, fps, meta: dict):
     output_path  = os.path.join(_fe_output_dir(frame_paths, []),
                                 f"{source_base}_compiled.mp4")
 
-    success = ffmpeg.create_video_from_frames_dir(frames_dir, output_path, fps_val, image_format)
-    if not success or not os.path.isfile(output_path):
+    # Compile frames to a silent intermediate, then mux in source audio if available.
+    source_path = meta.get('source_path', '')
+    has_audio   = bool(source_path) and util.is_video(source_path)
+    vid_only    = (output_path + '__noaudio.mp4') if has_audio else output_path
+
+    success = ffmpeg.create_video_from_frames_dir(frames_dir, vid_only, fps_val, image_format)
+    if not success or not os.path.isfile(vid_only):
         return (*_no, "❌ MP4 compilation failed — check the console for ffmpeg errors.")
+
+    if has_audio:
+        audio_ok = ffmpeg.restore_audio(vid_only, source_path, None, None, output_path)
+        if os.path.isfile(vid_only):
+            os.remove(vid_only)
+        if not audio_ok or not os.path.isfile(output_path):
+            return (*_no, "❌ Audio restoration failed — check the console for ffmpeg errors.")
 
     return (
         gr.update(visible=False),
@@ -1608,7 +1516,6 @@ def on_fe_compile_current_gif(frame_paths: list, fps, meta: dict):
     output_path  = os.path.join(_fe_output_dir(frame_paths, []),
                                 f"{source_base}_compiled.gif")
 
-    # Detect frame dimensions from first frame
     width = height = 0
     try:
         with Image.open(frame_paths[0]) as img:
@@ -1626,89 +1533,4 @@ def on_fe_compile_current_gif(frame_paths: list, fps, meta: dict):
         gr.update(visible=True, value=output_path),
         gr.update(visible=False),
         f"✅ Compiled → **{os.path.basename(output_path)}**",
-    )
-
-
-def on_fe_compile_mp4(frame_paths: list, orig_paths: list, orig_dir: str,
-                       meta: dict, fps):
-    """Reprocess original frames through face-swap with per-frame masks, compile MP4."""
-    _no = (gr.update(visible=False), gr.update(visible=False))
-    if not orig_paths and not frame_paths:
-        return (*_no, "⚠️ No frames loaded.")
-    if not orig_paths:
-        return (*_no, "⚠️ No original frames found — run with 'Keep Frames' enabled.")
-    if not roop.globals.INPUT_FACESETS:
-        return (*_no, "⚠️ No source face loaded — load a source image in the Face Swap tab first.")
-
-    fps_val      = float(fps) if fps else float(meta.get('fps', 24.0))
-    source       = meta.get('source', 'output')
-    source_base  = os.path.splitext(source)[0]
-    output_path  = os.path.join(_fe_output_dir(frame_paths, orig_paths),
-                                f"{source_base}_reprocessed.mp4")
-
-    out_dir, image_format = _fe_reprocess_frames(orig_paths, orig_dir, meta, fps_val)
-    if out_dir is None:
-        return (*_no, "❌ Reprocessing failed — check the console for errors.")
-
-    import shutil
-    try:
-        success = ffmpeg.create_video_from_frames_dir(out_dir, output_path, fps_val, image_format)
-    finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
-
-    if not success or not os.path.isfile(output_path):
-        return (*_no, "❌ MP4 compilation failed — check the console for ffmpeg errors.")
-
-    return (
-        gr.update(visible=False),
-        gr.update(visible=True, value=output_path),
-        f"✅ Reprocessed → **{os.path.basename(output_path)}**",
-    )
-
-
-def on_fe_compile_gif(frame_paths: list, orig_paths: list, orig_dir: str,
-                       meta: dict, fps):
-    """Reprocess original frames through face-swap with per-frame masks, compile GIF."""
-    _no = (gr.update(visible=False), gr.update(visible=False))
-    if not orig_paths and not frame_paths:
-        return (*_no, "⚠️ No frames loaded.")
-    if not orig_paths:
-        return (*_no, "⚠️ No original frames found — run with 'Keep Frames' enabled.")
-    if not roop.globals.INPUT_FACESETS:
-        return (*_no, "⚠️ No source face loaded — load a source image in the Face Swap tab first.")
-
-    fps_val      = float(fps) if fps else float(meta.get('fps', 24.0))
-    source       = meta.get('source', 'output')
-    source_base  = os.path.splitext(source)[0]
-
-    # Detect frame dimensions from first orig frame
-    width = height = 0
-    try:
-        with Image.open(orig_paths[0]) as img:
-            width, height = img.size
-    except Exception:
-        pass
-
-    output_path = os.path.join(_fe_output_dir(frame_paths, orig_paths),
-                               f"{source_base}_reprocessed.gif")
-
-    out_dir, image_format = _fe_reprocess_frames(orig_paths, orig_dir, meta, fps_val)
-    if out_dir is None:
-        return (*_no, "❌ Reprocessing failed — check the console for errors.")
-
-    import shutil
-    try:
-        success = ffmpeg.create_gif_from_frames_dir(
-            out_dir, output_path, fps_val, width, height, image_format
-        )
-    finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
-
-    if not success or not os.path.isfile(output_path):
-        return (*_no, "❌ GIF compilation failed — check the console for ffmpeg errors.")
-
-    return (
-        gr.update(visible=True, value=output_path),
-        gr.update(visible=False),
-        f"✅ Reprocessed → **{os.path.basename(output_path)}**",
     )

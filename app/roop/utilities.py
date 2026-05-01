@@ -257,7 +257,7 @@ def move_frames_to_output(target_path: str, fps: float = 0.0) -> None:
         write_frames_metadata(
             frames_out_dir,
             fps=fps,
-            source_name=os.path.basename(target_path),
+            source_name=target_path,
             image_format=roop.globals.CFG.output_image_format,
         )
     # Clean up the now-empty parent temp directory if nothing else uses it
@@ -268,7 +268,12 @@ def move_frames_to_output(target_path: str, fps: float = 0.0) -> None:
 
 def write_frames_metadata(frames_dir: str, fps: float, source_name: str, image_format: str) -> None:
     """Write a meta.json sidecar inside *frames_dir* for use by the Frame Editor."""
-    meta = {"fps": fps, "source": os.path.basename(source_name), "image_format": image_format}
+    meta = {
+        "fps": fps,
+        "source": os.path.basename(source_name),
+        "source_path": source_name,
+        "image_format": image_format,
+    }
     try:
         with open(os.path.join(frames_dir, 'meta.json'), 'w') as fh:
             json.dump(meta, fh)

@@ -22,5 +22,4 @@ class ProcessOptions:
         # Target frontalization (Option 2)
         self.use_frontalization = use_frontalization
         self.frontalization_threshold = frontalization_threshold
-        # Swap model selection (Option 4): 'inswapper' | 'ghost'
         self.swap_model = swap_model

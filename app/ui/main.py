@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 import time
@@ -482,6 +483,21 @@ def run():
         launch_browser = roop.globals.CFG.launch_browser
 
         uii.ui_restart_server = False
+
+        # Suppress the benign Windows ProactorEventLoop noise that fires when a
+        # browser tab drops an SSE/WebSocket connection mid-stream.
+        # ConnectionResetError [WinError 10054] is harmless — Gradio handles it
+        # internally — but asyncio prints a traceback to stderr by default.
+        def _suppress_connection_reset(loop, context):
+            exc = context.get('exception')
+            if isinstance(exc, ConnectionResetError):
+                return
+            loop.default_exception_handler(context)
+        try:
+            asyncio.get_event_loop().set_exception_handler(_suppress_connection_reset)
+        except RuntimeError:
+            pass  # no running loop yet; Gradio will create one
+
         try:
             ui.queue().launch(inbrowser=launch_browser, server_name=server_name, server_port=server_port, share=roop.globals.CFG.server_share, ssl_verify=ssl_verify, prevent_thread_lock=True, show_error=True)
         except Exception as e:

@@ -435,7 +435,8 @@ def faceswap_tab():
     ui.globals.ui_upscale.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_use_3d_recon.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_use_source_bank.change(fn=on_use_source_bank_changed, inputs=[chk_use_source_bank], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
-    # chk_use_frontalization, sld_frontalization_threshold, dd_swap_model are hidden/disabled
+    dd_swap_model.change(fn=on_swap_model_changed, inputs=[dd_swap_model], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    # chk_use_frontalization, sld_frontalization_threshold remain hidden/disabled
 
     bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[target_faces, selected_face_detection])
     set_frame_start.click(fn=on_set_frame, inputs=[set_frame_start, preview_frame_num], outputs=[text_frame_clip])

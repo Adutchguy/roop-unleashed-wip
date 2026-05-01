@@ -50,7 +50,6 @@ def pick_queue(queue: Queue[str], queue_per_future: int) -> List[str]:
 class ProcessMgr():
     plugins = {
         'faceswap'          : 'FaceSwapInsightFace',
-        'ghost'             : 'FaceSwapGHOST',
         'mask_clip2seg'     : 'Mask_Clip2Seg',
         'mask_xseg'         : 'Mask_XSeg',
         'codeformer'        : 'Enhance_CodeFormer',
@@ -678,8 +677,7 @@ class ProcessMgr():
                     frame = rotcutframe
                     target_face = rotface
 
-        # ── Model output size (dynamic per swap processor) ────────────────────
-        # GHOST uses 256 × 256; inswapper uses 128 × 128.
+        # ── Model output size (inswapper uses 128 × 128) ─────────────────────
         swap_p = next((p for p in self.processors if p.type == 'swap'), None)
         model_output_size = getattr(swap_p, 'model_output_size', 128)
 
@@ -1127,22 +1125,10 @@ class ProcessMgr():
         return mask
 
 
-    def _active_swap_model_type(self) -> str:
-        """Return 'ghost' if the active swap processor is GHOST, else 'inswapper'."""
-        for p in self.processors:
-            if p.type == 'swap':
-                return getattr(p, 'processorname', 'faceswap')
-        return 'faceswap'
-
     def prepare_crop_frame(self, swap_frame):
-        model_type = self._active_swap_model_type()
         model_mean = [0.0, 0.0, 0.0]
         model_standard_deviation = [1.0, 1.0, 1.0]
-
-        if model_type == 'ghost':
-            swap_frame = swap_frame[:, :, ::-1] / 127.5 - 1
-        else:
-            swap_frame = swap_frame[:, :, ::-1] / 255.0
+        swap_frame = swap_frame[:, :, ::-1] / 255.0
         swap_frame = (swap_frame - model_mean) / model_standard_deviation
         swap_frame = swap_frame.transpose(2, 0, 1)
         swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
@@ -1150,14 +1136,8 @@ class ProcessMgr():
 
 
     def normalize_swap_frame(self, swap_frame):
-        model_type = self._active_swap_model_type()
         swap_frame = swap_frame.transpose(1, 2, 0)
-        if model_type == 'ghost':
-            # Reverse mean=0.5/std=0.5 normalisation; clip before scaling
-            swap_frame = (swap_frame * 0.5 + 0.5).clip(0, 1)
-            swap_frame = (swap_frame * 255.0).round()
-        else:
-            swap_frame = (swap_frame * 255.0).round()
+        swap_frame = (swap_frame * 255.0).round()
         swap_frame = swap_frame[:, :, ::-1]
         return swap_frame
 

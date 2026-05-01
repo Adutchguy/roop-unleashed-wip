@@ -220,15 +220,8 @@ def start() -> None:
 
 
 def get_processing_plugins(masking_engine, swap_model='inswapper'):
-    """Build the processor dict for ProcessOptions.
-
-    swap_model: 'inswapper' uses FaceSwapInsightFace (default);
-                'ghost'     uses FaceSwapGHOST (requires app/models/ghost.onnx).
-    """
-    if swap_model == 'ghost':
-        processors = {"ghost": {}}
-    else:
-        processors = {"faceswap": {}}
+    """Build the processor dict for ProcessOptions."""
+    processors = {"faceswap": {}}
     if masking_engine is not None:
         processors.update({masking_engine: {}})
     

@@ -144,7 +144,7 @@ def extras_tab(bt_destfiles=None):
             label="Current frame (draw to paint, eraser to undo strokes)",
             sources=None,           # background set programmatically
             type="numpy",
-            image_mode="RGB",
+            image_mode="RGBA",  # RGBA preserves drawing-layer alpha; _rgb3() strips it where not needed
             height=520,
             layers=True,            # separate drawing layer for face-space tracking
             transforms=(),          # disable crop/resize controls
@@ -770,7 +770,7 @@ def on_fe_load_file(file):
     temp_dir     = util.get_temp_directory_path(file_path)
     image_format = roop.globals.CFG.output_image_format
     # Write meta.json so on_fe_load() reads the correct fps instead of defaulting to 24
-    util.write_frames_metadata(temp_dir, fps, os.path.basename(file_path), image_format)
+    util.write_frames_metadata(temp_dir, fps, file_path, image_format)  # full path needed for audio restoration
     return on_fe_load(temp_dir)
 
 
@@ -782,97 +782,97 @@ def _fe_extract_drawing(editor_value: dict, src_bgr: np.ndarray):
 
     Returns (None, None) if nothing was drawn.
 
-    CRITICAL: draw_rgb must be zero outside stroke pixels.  If it contains
-    source-frame content at near-zero-alpha positions, that content bleeds
-    into target frames as a faint (or not-so-faint) ghost of the original
-    frame, looking like a copy of the frame being waved around.
-
-    Source priority
-    ---------------
-    1. layers[0] RGBA alpha — the true drawing-layer alpha; brush colour only.
-    2. background-vs-composite diff — both images come from the same browser
-       round-trip so JPEG encoding is identical outside strokes → diff=0 there.
-       Far more accurate than diffing against the on-disk file (which has
-       different compression and creates false positives across the whole frame).
-    3. composite-vs-on-disk diff — least reliable, kept only as last resort.
+    Requires image_mode="RGBA" on the ImageEditor so drawing layers
+    preserve their alpha channel (Method 1).  Methods 2/3 are fallbacks
+    based on diffing the composite against the background or the on-disk frame.
     """
     h_src, w_src = src_bgr.shape[:2]
 
-    def _rgb3(img):
-        """Return float32 RGB (H,W,3), dropping alpha if present."""
-        img = img.astype(np.float32)
-        return img[:, :, :3] if img.ndim == 3 and img.shape[2] == 4 else img
+    def _to_rgb(img):
+        """Return float32 RGB (H,W,3) from any ndim image, dropping alpha."""
+        arr = np.asarray(img).astype(np.float32)
+        if arr.ndim == 2:
+            return np.stack([arr, arr, arr], axis=2)
+        return arr[:, :, :3]
 
-    def _fit(img):
-        """Resize to (h_src, w_src) if needed."""
-        if img.shape[:2] != (h_src, w_src):
-            return cv2.resize(img, (w_src, h_src), interpolation=cv2.INTER_LINEAR)
-        return img
+    def _fit(arr):
+        """Resize (H,W,*) to (h_src,w_src) if needed."""
+        if arr.shape[:2] != (h_src, w_src):
+            return cv2.resize(arr, (w_src, h_src), interpolation=cv2.INTER_LINEAR)
+        return arr
 
     def _mask_from_binary(binary, stroke_rgb):
-        """Feather a uint8 binary mask and zero draw_rgb outside stroke pixels.
-
-        Zeroing draw_rgb prevents source-frame content from bleeding through
-        at feathered edge pixels that have small but non-zero alpha.
-        """
-        alpha_f   = cv2.GaussianBlur(
-            binary.astype(np.float32), (0, 0), sigmaX=4
-        ).clip(0.0, 1.0)
-        # draw_rgb = stroke colour where drawn, 0 elsewhere
-        draw_rgb  = np.where(binary[:, :, np.newaxis].astype(bool),
-                             stroke_rgb, np.float32(0))
+        """Feather binary mask; zero draw_rgb outside stroke pixels."""
+        alpha_f  = cv2.GaussianBlur(binary.astype(np.float32), (0, 0), sigmaX=4).clip(0, 1)
+        draw_rgb = np.where(binary[:, :, np.newaxis].astype(bool), stroke_rgb, np.float32(0))
         return draw_rgb, alpha_f[:, :, np.newaxis]
-
-    # ── 1. Drawing layer RGBA alpha ──────────────────────────────────────
-    for layer in (editor_value.get("layers") or []):
-        if layer is None:
-            continue
-        layer = np.asarray(layer)   # handles PIL Images and numpy arrays alike
-        if layer.ndim != 3 or layer.shape[2] != 4:
-            continue
-        layer   = _fit(layer)
-        alpha_f = layer[:, :, 3].astype(np.float32) / 255.0
-        if alpha_f.max() > 0.02:
-            # Skip if this looks like a full-frame composite
-            # (>50 % opaque pixels means the layer is not a sparse stroke layer).
-            if (alpha_f > 0.1).mean() > 0.5:
-                continue
-            # Layer RGB is the raw brush colour — zero background bleed possible
-            alpha_soft = cv2.GaussianBlur(alpha_f, (0, 0), sigmaX=4).clip(0.0, 1.0)
-            draw_rgb   = np.where(
-                (alpha_f > 0.02)[:, :, np.newaxis],
-                layer[:, :, :3].astype(np.float32),
-                np.float32(0),
-            )
-            return draw_rgb, alpha_soft[:, :, np.newaxis]
 
     composite  = editor_value.get("composite")
     background = editor_value.get("background")
+    layers     = editor_value.get("layers") or []
+    print(f"[FE] extract_drawing: layers={len(layers)}, "
+          f"composite={'yes' if composite is not None else 'NO'}, "
+          f"background={'yes' if background is not None else 'NO'}, "
+          f"src={h_src}x{w_src}")
 
-    # ── 2. background-vs-composite diff (same browser encoding) ─────────
+    # ── 1. Drawing layer RGBA alpha (works when image_mode="RGBA") ───────
+    for li, layer in enumerate(layers):
+        if layer is None:
+            continue
+        arr = np.asarray(layer)
+        print(f"[FE]   layer[{li}] shape={arr.shape} dtype={arr.dtype}")
+        if arr.ndim != 3 or arr.shape[2] != 4:
+            print(f"[FE]   layer[{li}] skipped — not RGBA (channels={arr.shape[2] if arr.ndim==3 else '?'})")
+            continue
+        arr     = _fit(arr)
+        alpha_f = arr[:, :, 3].astype(np.float32) / 255.0
+        drawn   = (alpha_f > 0.02).sum()
+        opaque  = (alpha_f > 0.1).mean()
+        print(f"[FE]   layer[{li}] alpha: max={alpha_f.max():.3f}, "
+              f"drawn_px={drawn}, opaque_frac={opaque:.3f}")
+        if alpha_f.max() < 0.02:
+            print(f"[FE]   layer[{li}] skipped — no strokes (all transparent)")
+            continue
+        if opaque > 0.5:
+            print(f"[FE]   layer[{li}] skipped — looks like full-frame composite")
+            continue
+        alpha_soft = cv2.GaussianBlur(alpha_f, (0, 0), sigmaX=4).clip(0, 1)
+        draw_rgb   = np.where((alpha_f > 0.02)[:, :, np.newaxis],
+                              arr[:, :, :3].astype(np.float32), np.float32(0))
+        print(f"[FE] ✓ Method 1 (layer alpha): {drawn} stroke pixels")
+        return draw_rgb, alpha_soft[:, :, np.newaxis]
+
+    # ── 2. background-vs-composite diff ──────────────────────────────────
     if composite is not None and background is not None:
-        comp_rgb = _rgb3(_fit(np.asarray(composite)))
-        bg_rgb   = _rgb3(_fit(np.asarray(background)))
+        comp_rgb = _fit(_to_rgb(composite))
+        bg_rgb   = _fit(_to_rgb(background))
         diff     = np.abs(comp_rgb - bg_rgb).max(axis=2)
-        # Low threshold: both arrays share the same JPEG encoding artefacts
-        # so diff outside strokes should be ≈0
+        print(f"[FE]   bg-vs-comp diff: max={diff.max():.1f}, "
+              f"px>5={( diff>5).sum()}, px>15={(diff>15).sum()}")
         binary   = (diff > 5).astype(np.uint8)
         kernel   = np.ones((3, 3), np.uint8)
         binary   = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
         if binary.sum() > 0:
+            print(f"[FE] ✓ Method 2 (bg-composite diff): {binary.sum()} stroke pixels")
             return _mask_from_binary(binary, comp_rgb)
+        print(f"[FE]   Method 2 found no strokes after morphology")
 
-    # ── 3. composite-vs-on-disk diff (last resort) ──────────────────────
+    # ── 3. composite-vs-on-disk diff ─────────────────────────────────────
     if composite is None:
+        print(f"[FE] ✗ No drawing: composite is None")
         return None, None
-    comp_rgb = _rgb3(_fit(np.asarray(composite)))
+    comp_rgb = _fit(_to_rgb(composite))
     src_rgb  = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
     diff     = np.abs(comp_rgb - src_rgb).max(axis=2)
+    print(f"[FE]   comp-vs-disk diff: max={diff.max():.1f}, "
+          f"px>10={(diff>10).sum()}, px>20={(diff>20).sum()}")
     binary   = (diff > 10).astype(np.uint8)
     kernel   = np.ones((3, 3), np.uint8)
     binary   = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
     if binary.sum() < 1:
+        print(f"[FE] ✗ No drawing: Method 3 found no strokes after morphology")
         return None, None
+    print(f"[FE] ✓ Method 3 (comp-disk diff): {binary.sum()} stroke pixels")
     return _mask_from_binary(binary, comp_rgb)
 
 
@@ -963,6 +963,9 @@ def on_fe_apply_tracked(editor_value, frame_num, range_start, range_end, frame_p
     crop_rgba, x1_c, y1_c = _drawing_crop(draw_rgb, draw_mask, h_src, w_src)
     if crop_rgba is None:
         return "ℹ️ No drawing detected."
+    print(f"[FE] crop_rgba shape={crop_rgba.shape}, "
+          f"alpha_max={crop_rgba[:,:,3].max()}, alpha_mean={crop_rgba[:,:,3].mean():.2f}, "
+          f"at ({x1_c},{y1_c})")
 
     src_face = get_first_face(src_bgr)
     if src_face is None:
@@ -1005,7 +1008,11 @@ def on_fe_apply_tracked(editor_value, frame_num, range_start, range_end, frame_p
             no_face += 1
 
         result = _blend_patch(tgt_bgr, crop_rgba, x1_c, y1_c, M_direct)
-        cv2.imwrite(tgt_path, result)
+        ok = cv2.imwrite(tgt_path, result)
+        if applied == 0:
+            diff_px = int(np.abs(result.astype(np.int32) - tgt_bgr.astype(np.int32)).max())
+            print(f"[FE] frame[{i}] write={'ok' if ok else 'FAILED'}, "
+                  f"max_pixel_change={diff_px}, face={'yes' if tgt_face is not None else 'no'}")
         applied += 1
 
     msg = f"✅ Drawing applied (face-tracked) to **{applied}** frame(s)"

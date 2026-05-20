@@ -74,7 +74,6 @@ class Settings:
         # Target frontalization (Option 2)
         self.use_frontalization = self.default_get(data, 'use_frontalization', False)
         self.frontalization_threshold = self.default_get(data, 'frontalization_threshold', 30.0)
-        # Swap model (Option 4): 'inswapper' | 'ghost'
         self.swap_model = self.default_get(data, 'swap_model', 'inswapper')
 
 

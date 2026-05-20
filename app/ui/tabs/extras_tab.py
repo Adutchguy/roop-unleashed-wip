@@ -144,7 +144,7 @@ def extras_tab(bt_destfiles=None):
             label="Current frame (draw to paint, eraser to undo strokes)",
             sources=None,           # background set programmatically
             type="numpy",
-            image_mode="RGB",
+            image_mode="RGBA",  # RGBA preserves drawing-layer alpha; _rgb3() strips it where not needed
             height=520,
             layers=True,            # separate drawing layer for face-space tracking
             transforms=(),          # disable crop/resize controls
@@ -255,18 +255,6 @@ def extras_tab(bt_destfiles=None):
             gr.Markdown(
                 "_Stitches the current frame images (with any drawings baked in) directly "
                 "into a video or GIF.  No face-swap is applied._"
-            )
-
-        # ── Reprocess (face-swap pipeline from originals) ───────────
-        with gr.Group():
-            gr.Markdown("#### Reprocess (Face Swap)")
-            with gr.Row(variant="panel"):
-                fe_compile_mp4_btn = gr.Button("🎬 Reprocess → MP4", scale=2)
-                fe_compile_gif_btn = gr.Button("🎞️ Reprocess → GIF", scale=2)
-            gr.Markdown(
-                "_Reruns the face-swap pipeline on each **original** (unswapped) frame "
-                "using saved per-frame mask settings, then compiles.  "
-                "Requires originals and a loaded source face._"
             )
 
         # ── Compiled output preview ───────────────────────────────────
@@ -434,18 +422,6 @@ def extras_tab(bt_destfiles=None):
     fe_compile_current_gif_btn.click(
         fn=on_fe_compile_current_gif,
         inputs=[fe_frames_list, fe_fps, fe_meta],
-        outputs=[fe_out_image, fe_out_video, fe_status],
-    )
-
-    # Reprocess (face-swap pipeline from originals)
-    fe_compile_mp4_btn.click(
-        fn=on_fe_compile_mp4,
-        inputs=[fe_frames_list, fe_orig_list, fe_orig_dir, fe_meta, fe_fps],
-        outputs=[fe_out_image, fe_out_video, fe_status],
-    )
-    fe_compile_gif_btn.click(
-        fn=on_fe_compile_gif,
-        inputs=[fe_frames_list, fe_orig_list, fe_orig_dir, fe_meta, fe_fps],
         outputs=[fe_out_image, fe_out_video, fe_status],
     )
 
@@ -794,57 +770,176 @@ def on_fe_load_file(file):
     temp_dir     = util.get_temp_directory_path(file_path)
     image_format = roop.globals.CFG.output_image_format
     # Write meta.json so on_fe_load() reads the correct fps instead of defaulting to 24
-    util.write_frames_metadata(temp_dir, fps, os.path.basename(file_path), image_format)
+    util.write_frames_metadata(temp_dir, fps, file_path, image_format)  # full path needed for audio restoration
     return on_fe_load(temp_dir)
 
 
 def _fe_extract_drawing(editor_value: dict, src_bgr: np.ndarray):
-    """Return (draw_rgb, draw_mask) by diffing the composite against the on-disk frame.
+    """Return (draw_rgb, draw_mask) containing ONLY the drawn strokes.
 
-    Using `composite` (frame + strokes merged) and diffing against the clean frame
-    is far more reliable than relying on `layers[0]`, which Gradio may leave empty.
+    draw_rgb  — float32 (H, W, 3)  brush colour at stroke pixels, 0 elsewhere
+    draw_mask — float32 (H, W, 1)  stroke alpha, feathered; 0.0 where nothing drawn
 
-    draw_rgb  — float32 (H, W, 3) RGB colour of drawn pixels at source resolution
-    draw_mask — float32 (H, W, 1) alpha: 1.0 where drawn, 0.0 elsewhere
+    Returns (None, None) if nothing was drawn.
 
-    Returns (None, None) if nothing was drawn or composite is unavailable.
+    Requires image_mode="RGBA" on the ImageEditor so drawing layers
+    preserve their alpha channel (Method 1).  Methods 2/3 are fallbacks
+    based on diffing the composite against the background or the on-disk frame.
     """
-    composite = editor_value.get("composite")
-    if composite is None:
-        return None, None
-
     h_src, w_src = src_bgr.shape[:2]
-    src_rgb = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
 
-    # Composite may be RGBA or RGB; extract RGB
-    if composite.ndim == 3 and composite.shape[2] == 4:
-        comp_rgb = composite[:, :, :3].astype(np.float32)
-    else:
-        comp_rgb = composite.astype(np.float32)
+    def _to_rgb(img):
+        """Return float32 RGB (H,W,3) from any ndim image, dropping alpha."""
+        arr = np.asarray(img).astype(np.float32)
+        if arr.ndim == 2:
+            return np.stack([arr, arr, arr], axis=2)
+        return arr[:, :, :3]
 
-    # Resize to match source frame if the editor displayed a scaled-down version
-    if comp_rgb.shape[:2] != (h_src, w_src):
-        comp_rgb = cv2.resize(comp_rgb, (w_src, h_src), interpolation=cv2.INTER_LINEAR)
+    def _fit(arr):
+        """Resize (H,W,*) to (h_src,w_src) if needed."""
+        if arr.shape[:2] != (h_src, w_src):
+            return cv2.resize(arr, (w_src, h_src), interpolation=cv2.INTER_LINEAR)
+        return arr
 
-    # Per-pixel max-channel absolute difference → drawn pixels stand out
-    diff      = np.abs(comp_rgb - src_rgb).max(axis=2)      # (H, W)
-    draw_mask = (diff > 10).astype(np.float32)[:, :, np.newaxis]  # threshold ignores JPEG noise
+    def _mask_from_binary(binary, stroke_rgb):
+        """Feather binary mask; zero draw_rgb outside stroke pixels."""
+        alpha_f  = cv2.GaussianBlur(binary.astype(np.float32), (0, 0), sigmaX=4).clip(0, 1)
+        draw_rgb = np.where(binary[:, :, np.newaxis].astype(bool), stroke_rgb, np.float32(0))
+        return draw_rgb, alpha_f[:, :, np.newaxis]
 
-    if draw_mask.sum() < 1:
-        return None, None  # nothing drawn
+    composite  = editor_value.get("composite")
+    background = editor_value.get("background")
+    layers     = editor_value.get("layers") or []
+    print(f"[FE] extract_drawing: layers={len(layers)}, "
+          f"composite={'yes' if composite is not None else 'NO'}, "
+          f"background={'yes' if background is not None else 'NO'}, "
+          f"src={h_src}x{w_src}")
 
-    return comp_rgb, draw_mask
+    # ── 1. Drawing layer RGBA alpha (works when image_mode="RGBA") ───────
+    for li, layer in enumerate(layers):
+        if layer is None:
+            continue
+        arr = np.asarray(layer)
+        print(f"[FE]   layer[{li}] shape={arr.shape} dtype={arr.dtype}")
+        if arr.ndim != 3 or arr.shape[2] != 4:
+            print(f"[FE]   layer[{li}] skipped — not RGBA (channels={arr.shape[2] if arr.ndim==3 else '?'})")
+            continue
+        arr     = _fit(arr)
+        alpha_f = arr[:, :, 3].astype(np.float32) / 255.0
+        drawn   = (alpha_f > 0.02).sum()
+        opaque  = (alpha_f > 0.1).mean()
+        print(f"[FE]   layer[{li}] alpha: max={alpha_f.max():.3f}, "
+              f"drawn_px={drawn}, opaque_frac={opaque:.3f}")
+        if alpha_f.max() < 0.02:
+            print(f"[FE]   layer[{li}] skipped — no strokes (all transparent)")
+            continue
+        if opaque > 0.5:
+            print(f"[FE]   layer[{li}] skipped — looks like full-frame composite")
+            continue
+        alpha_soft = cv2.GaussianBlur(alpha_f, (0, 0), sigmaX=4).clip(0, 1)
+        draw_rgb   = np.where((alpha_f > 0.02)[:, :, np.newaxis],
+                              arr[:, :, :3].astype(np.float32), np.float32(0))
+        print(f"[FE] ✓ Method 1 (layer alpha): {drawn} stroke pixels")
+        return draw_rgb, alpha_soft[:, :, np.newaxis]
+
+    # ── 2. background-vs-composite diff ──────────────────────────────────
+    if composite is not None and background is not None:
+        comp_rgb = _fit(_to_rgb(composite))
+        bg_rgb   = _fit(_to_rgb(background))
+        diff     = np.abs(comp_rgb - bg_rgb).max(axis=2)
+        print(f"[FE]   bg-vs-comp diff: max={diff.max():.1f}, "
+              f"px>5={( diff>5).sum()}, px>15={(diff>15).sum()}")
+        binary   = (diff > 5).astype(np.uint8)
+        kernel   = np.ones((3, 3), np.uint8)
+        binary   = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+        if binary.sum() > 0:
+            print(f"[FE] ✓ Method 2 (bg-composite diff): {binary.sum()} stroke pixels")
+            return _mask_from_binary(binary, comp_rgb)
+        print(f"[FE]   Method 2 found no strokes after morphology")
+
+    # ── 3. composite-vs-on-disk diff ─────────────────────────────────────
+    if composite is None:
+        print(f"[FE] ✗ No drawing: composite is None")
+        return None, None
+    comp_rgb = _fit(_to_rgb(composite))
+    src_rgb  = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+    diff     = np.abs(comp_rgb - src_rgb).max(axis=2)
+    print(f"[FE]   comp-vs-disk diff: max={diff.max():.1f}, "
+          f"px>10={(diff>10).sum()}, px>20={(diff>20).sum()}")
+    binary   = (diff > 10).astype(np.uint8)
+    kernel   = np.ones((3, 3), np.uint8)
+    binary   = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
+    if binary.sum() < 1:
+        print(f"[FE] ✗ No drawing: Method 3 found no strokes after morphology")
+        return None, None
+    print(f"[FE] ✓ Method 3 (comp-disk diff): {binary.sum()} stroke pixels")
+    return _mask_from_binary(binary, comp_rgb)
+
+
+def _drawing_crop(draw_rgb, draw_mask, h_src, w_src, pad: int = 30):
+    """Return (crop_rgba, x1_c, y1_c) — tight bbox crop of the drawing + padding.
+
+    Warping only this small patch (instead of the full-frame drawing) eliminates
+    the large warp-boundary rectangle that previously appeared around tracked regions.
+    """
+    mask_sq = draw_mask.squeeze()
+    ys, xs  = np.where(mask_sq > 0.05)
+    if len(ys) == 0:
+        return None, 0, 0
+    y1_c = max(0, int(ys.min()) - pad)
+    y2_c = min(h_src, int(ys.max()) + pad)
+    x1_c = max(0, int(xs.min()) - pad)
+    x2_c = min(w_src, int(xs.max()) + pad)
+    alpha_u8 = (draw_mask * 255).clip(0, 255).astype(np.uint8)
+    rgb_u8   = draw_rgb.clip(0, 255).astype(np.uint8)
+    rgba     = np.concatenate([rgb_u8, alpha_u8], axis=2)
+    return rgba[y1_c:y2_c, x1_c:x2_c], x1_c, y1_c
+
+
+def _blend_patch(tgt_bgr: np.ndarray,
+                 crop_rgba: np.ndarray,
+                 x1_c: int, y1_c: int,
+                 M_dst_to_src: np.ndarray) -> np.ndarray:
+    """Warp crop_rgba into tgt_bgr's space using M_dst_to_src and alpha-blend.
+
+    M_dst_to_src is a 2×3 affine in OpenCV's *inverse-map* convention:
+        for each destination pixel (x′,y′), the source pixel is M · [x′,y′,1]ᵀ.
+
+    Since the source is crop_rgba (not the full-frame drawing), we shift the
+    translation column by (-x1_c, -y1_c) so that lookups hit the crop's
+    coordinate system rather than full-frame coordinates.
+    """
+    h, w   = tgt_bgr.shape[:2]
+    M_crop = M_dst_to_src.copy().astype(np.float32)
+    M_crop[0, 2] -= x1_c
+    M_crop[1, 2] -= y1_c
+    warped = cv2.warpAffine(crop_rgba, M_crop, (w, h),
+                            flags=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT,
+                            borderValue=(0, 0, 0, 0))
+    alpha   = warped[:, :, 3:4].astype(np.float32) / 255.0
+    rgb_fg  = warped[:, :, :3].astype(np.float32)
+    tgt_rgb = cv2.cvtColor(tgt_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+    blended = (rgb_fg * alpha + tgt_rgb * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+    return cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
 
 
 def on_fe_apply_tracked(editor_value, frame_num, range_start, range_end, frame_paths: list):
-    """Warp strokes from the current frame's face-space onto every frame in the range.
+    """Warp the drawn strokes — tracked to the face — onto every frame in the range.
 
-    Strategy:
-      1. Diff composite vs on-disk source frame → isolate drawn pixels reliably.
-      2. estimate_norm(src_kps) → warp drawing into 112×112 face-space.
-      3. For each target: estimate_norm(tgt_kps) → invert → warp back → alpha-blend.
-         If no face is detected in a target frame, fall back to the source transform
-         so the drawing still appears (rather than silently skipping the frame).
+    OpenCV warpAffine convention (inverse map):
+        dst(x′, y′) = src( M · [x′, y′, 1]ᵀ )
+    So every M we pass to warpAffine must map *destination* coords → *source* coords.
+
+    estimate_norm(kps, 112) returns M such that warpAffine(frame, M, (112,112))
+    gives the aligned face crop → M maps face-space coords to frame coords.
+
+    Pipeline for each target frame:
+        target pixel t
+            ──[M_tgt_inv = invertAffineTransform(M_tgt)]──▶ face-space point f
+            ──[M_src (maps face-space → source frame)]──▶  source drawing pixel s
+
+    Combined (single warpAffine): M_direct = M_src_3×3 @ M_tgt_inv_3×3
     """
     from roop.face_util import get_first_face, estimate_norm
 
@@ -853,7 +948,6 @@ def on_fe_apply_tracked(editor_value, frame_num, range_start, range_end, frame_p
     if not isinstance(editor_value, dict):
         return "⚠️ No editor value — open a frame first."
 
-    # Read source frame from disk
     cur_idx = max(0, int(frame_num) - 1)
     if cur_idx >= len(frame_paths):
         return "⚠️ Frame index out of range."
@@ -861,88 +955,89 @@ def on_fe_apply_tracked(editor_value, frame_num, range_start, range_end, frame_p
     if src_bgr is None:
         return "⚠️ Could not read source frame from disk."
 
-    # Isolate drawn pixels via composite-vs-frame diff
     draw_rgb, draw_mask = _fe_extract_drawing(editor_value, src_bgr)
     if draw_rgb is None:
         return "ℹ️ No drawing detected — make a stroke on the current frame first."
 
-    # Detect face in source frame to establish face-space transform
+    h_src, w_src = src_bgr.shape[:2]
+    crop_rgba, x1_c, y1_c = _drawing_crop(draw_rgb, draw_mask, h_src, w_src)
+    if crop_rgba is None:
+        return "ℹ️ No drawing detected."
+    print(f"[FE] crop_rgba shape={crop_rgba.shape}, "
+          f"alpha_max={crop_rgba[:,:,3].max()}, alpha_mean={crop_rgba[:,:,3].mean():.2f}, "
+          f"at ({x1_c},{y1_c})")
+
     src_face = get_first_face(src_bgr)
     if src_face is None:
         return "⚠️ No face detected in current frame — cannot establish face-space transform."
 
     face_size = 112
+    # M_src: face-space coords → source frame coords  (inverse-map convention)
     M_src     = estimate_norm(src_face.kps, face_size)
+    M_src_3x3 = np.vstack([M_src, [0.0, 0.0, 1.0]])
 
-    # Build RGBA drawing array and warp to face-space
-    draw_alpha_u8  = (draw_mask * 255).clip(0, 255).astype(np.uint8)
-    draw_rgb_u8    = draw_rgb.clip(0, 255).astype(np.uint8)
-    drawing_rgba   = np.concatenate([draw_rgb_u8, draw_alpha_u8], axis=2)
+    # Fallback inverse: identity warp in source-frame space
+    M_fallback = np.float32([[1, 0, 0], [0, 1, 0]])
 
-    face_drawing = cv2.warpAffine(
-        drawing_rgba, M_src, (face_size, face_size),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0, 0),
-    )
-
-    # Apply to each frame in range
     start_idx = max(0, int(range_start) - 1)
     end_idx   = min(len(frame_paths) - 1, int(range_end) - 1)
     if start_idx > end_idx:
         return "⚠️ Invalid range (From frame > To frame)."
 
-    applied   = 0
-    no_face   = 0
+    applied = 0
+    no_face = 0
     for i in range(start_idx, end_idx + 1):
         tgt_path = frame_paths[i]
         tgt_bgr  = cv2.imread(tgt_path)
         if tgt_bgr is None:
             continue
 
+        h_tgt, w_tgt = tgt_bgr.shape[:2]
         tgt_face = get_first_face(tgt_bgr)
+
         if tgt_face is not None:
-            M_inv = cv2.invertAffineTransform(estimate_norm(tgt_face.kps, face_size))
+            M_tgt     = estimate_norm(tgt_face.kps, face_size)
+            # M_tgt_inv: target frame coords → face-space coords
+            M_tgt_inv = cv2.invertAffineTransform(M_tgt)
+            M_tgt_inv_3x3 = np.vstack([M_tgt_inv, [0.0, 0.0, 1.0]])
+            # M_direct: target pixel → face-space → source frame pixel  (dst→src)
+            M_direct = (M_src_3x3 @ M_tgt_inv_3x3)[:2]
         else:
-            # Fallback: use source frame's inverse transform so the frame isn't skipped
-            M_inv = cv2.invertAffineTransform(M_src)
+            # No face in this frame — keep drawing at the same screen position
+            M_direct = M_fallback
             no_face += 1
 
-        h_tgt, w_tgt = tgt_bgr.shape[:2]
-        frame_drawing = cv2.warpAffine(
-            face_drawing, M_inv, (w_tgt, h_tgt),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0, 0),
-        )
-
-        alpha   = frame_drawing[:, :, 3:4].astype(np.float32) / 255.0
-        rgb_fg  = frame_drawing[:, :, :3].astype(np.float32)
-        tgt_rgb = cv2.cvtColor(tgt_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
-        blended = (rgb_fg * alpha + tgt_rgb * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
-        cv2.imwrite(tgt_path, cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+        result = _blend_patch(tgt_bgr, crop_rgba, x1_c, y1_c, M_direct)
+        ok = cv2.imwrite(tgt_path, result)
+        if applied == 0:
+            diff_px = int(np.abs(result.astype(np.int32) - tgt_bgr.astype(np.int32)).max())
+            print(f"[FE] frame[{i}] write={'ok' if ok else 'FAILED'}, "
+                  f"max_pixel_change={diff_px}, face={'yes' if tgt_face is not None else 'no'}")
         applied += 1
 
     msg = f"✅ Drawing applied (face-tracked) to **{applied}** frame(s)"
     if no_face:
-        msg += f" — ⚠️ {no_face} frame(s) used fallback position (no face detected)"
+        msg += f" — ⚠️ {no_face} frame(s) held position (no face detected)"
     return msg
 
 
 def on_fe_apply_person_tracked(editor_value, frame_num, range_start, range_end,
                                 frame_paths: list):
-    """Track the drawing across frames using sparse Lucas-Kanade optical flow.
+    """Track the drawn strokes across frames using sparse Lucas-Kanade optical flow.
 
-    Works on any part of the person (arms, torso, hair, clothing, face) — not just
-    the face region.  The algorithm:
+    Key correctness notes
+    ---------------------
+    estimateAffinePartial2D(src_pts, dst_pts) returns M_fwd such that:
+        dst_pt ≈ M_fwd · [src_pt_x, src_pt_y, 1]ᵀ   (forward map: source → current)
 
-      1. Extract drawn pixels via composite-vs-source diff.
-      2. Sample up to 300 feature points around the drawn region using
-         goodFeaturesToTrack (Shi-Tomasi corners provide stable tracking targets).
-      3. Forward pass (source → end): track points frame-by-frame with LK,
-         estimate a partial affine (scale + rotation + translation) from the
-         original source positions → current positions, warp drawing with that.
-      4. Backward pass (source → start): same logic in reverse.
+    warpAffine(src_img, M, dsize) uses *inverse* mapping:
+        dst(x′, y′) = src_img( M · [x′,y′,1]ᵀ )      (M must map dst → src)
+
+    Therefore we must invert M_fwd before passing it to warpAffine so that each
+    current-frame pixel correctly looks up the original source drawing pixel.
+
+    We also warp only a tight crop around the drawn strokes (not the full frame)
+    so there is no large warped-rectangle boundary visible in the result.
     """
     if not frame_paths:
         return "⚠️ No frames loaded."
@@ -965,96 +1060,91 @@ def on_fe_apply_person_tracked(editor_value, frame_num, range_start, range_end,
     if draw_rgb is None:
         return "ℹ️ No drawing detected — make a stroke on the current frame first."
 
-    # ── Build RGBA drawing at source resolution ───────────────────────
-    drawing_rgba = np.concatenate(
-        [draw_rgb.clip(0, 255).astype(np.uint8),
-         (draw_mask * 255).clip(0, 255).astype(np.uint8)],
-        axis=2,
-    )
+    h_fr, w_fr = src_bgr.shape[:2]
+
+    # Crop the drawing tightly around the strokes — warping only this small patch
+    # prevents the full-frame warp boundary from appearing as a visible rectangle.
+    crop_rgba, x1_c, y1_c = _drawing_crop(draw_rgb, draw_mask, h_fr, w_fr)
+    if crop_rgba is None:
+        return "ℹ️ No drawing detected."
 
     # ── Sample feature points around the drawn region ─────────────────
     src_gray = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY)
     mask_sq  = draw_mask.squeeze()
-    ys, xs   = np.where(mask_sq > 0)
-    if len(ys) == 0:
-        return "ℹ️ No drawing detected."
+    ys, xs   = np.where(mask_sq > 0.05)
 
-    # Expand bounding box ~40 px for richer corner features
-    h_fr, w_fr = src_bgr.shape[:2]
-    y1 = max(0, int(ys.min()) - 40);  y2 = min(h_fr, int(ys.max()) + 40)
-    x1 = max(0, int(xs.min()) - 40);  x2 = min(w_fr, int(xs.max()) + 40)
+    # Expand bbox ~40 px for richer Shi-Tomasi corners
+    y1_roi = max(0, int(ys.min()) - 40);  y2_roi = min(h_fr, int(ys.max()) + 40)
+    x1_roi = max(0, int(xs.min()) - 40);  x2_roi = min(w_fr, int(xs.max()) + 40)
     roi_mask = np.zeros_like(src_gray)
-    roi_mask[y1:y2, x1:x2] = 255
+    roi_mask[y1_roi:y2_roi, x1_roi:x2_roi] = 255
 
     pts = cv2.goodFeaturesToTrack(
         src_gray, maxCorners=300, qualityLevel=0.005,
         minDistance=4, mask=roi_mask,
     )
     if pts is None or len(pts) < 4:
-        # Fallback: sample pixel centres from the drawn area
         idx = np.random.choice(len(ys), min(300, len(ys)), replace=False)
         pts = np.stack([xs[idx], ys[idx]], axis=1).reshape(-1, 1, 2).astype(np.float32)
 
-    initial_pts = pts.reshape(-1, 2)          # (N, 2) — fixed source positions
-    N           = len(initial_pts)
+    initial_pts = pts.reshape(-1, 2)   # (N,2) — fixed reference positions in source frame
 
     LK = dict(winSize=(21, 21), maxLevel=3,
               criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
 
-    # ── Helper: warp drawing with affine M and alpha-blend onto frame ─
-    def _apply_M(tgt_bgr: np.ndarray, M: np.ndarray) -> np.ndarray:
-        h, w = tgt_bgr.shape[:2]
-        warped  = cv2.warpAffine(drawing_rgba, M, (w, h),
-                                 flags=cv2.INTER_LINEAR,
-                                 borderMode=cv2.BORDER_CONSTANT,
-                                 borderValue=(0, 0, 0, 0))
-        alpha   = warped[:, :, 3:4].astype(np.float32) / 255.0
-        rgb_fg  = warped[:, :, :3].astype(np.float32)
-        tgt_rgb = cv2.cvtColor(tgt_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
-        blended = (rgb_fg * alpha + tgt_rgb * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
-        return cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
+    # ── Helper: LK step → (M_fwd, tracked_pts, valid_count) ─────────
+    def _lk_step(prev_gray, curr_gray, cur_pts):
+        """Track cur_pts into curr_gray; return (M_fwd, next_pts, n_valid).
 
-    # ── Helper: LK step → affine estimate → (M, new_pts) ────────────
-    def _lk_step(prev_gray, curr_gray, cur_pts, src_pts):
-        """Track cur_pts into curr_gray; return (M, next_pts, valid_count)."""
+        M_fwd maps initial_pts → next_pts (forward: source → current frame).
+        Caller must invertAffineTransform(M_fwd) before warpAffine.
+        """
         next_pts, st, _ = cv2.calcOpticalFlowPyrLK(
             prev_gray, curr_gray,
             cur_pts.reshape(-1, 1, 2).astype(np.float32),
             None, **LK,
         )
         valid = st.reshape(-1).astype(bool)
-        M = None
+        M_fwd = None
         if valid.sum() >= 3:
-            M, _ = cv2.estimateAffinePartial2D(
-                src_pts[valid].reshape(-1, 1, 2),
+            M_fwd, _ = cv2.estimateAffinePartial2D(
+                initial_pts[valid].reshape(-1, 1, 2),
                 next_pts.reshape(-1, 2)[valid].reshape(-1, 1, 2),
             )
         next_pts_flat = next_pts.reshape(-1, 2)
-        # Reset lost points to their last position so tracking can recover
-        next_pts_flat[~valid] = cur_pts[~valid]
-        return M, next_pts_flat, int(valid.sum())
+        next_pts_flat[~valid] = cur_pts.reshape(-1, 2)[~valid]
+        return M_fwd, next_pts_flat, int(valid.sum())
+
+    # ── Helper: apply tracked warp to one frame ───────────────────────
+    def _apply_fwd(tgt_bgr, M_fwd):
+        """Invert M_fwd (src→dst) to get dst→src for warpAffine, then blend crop."""
+        if M_fwd is None:
+            return tgt_bgr
+        M_inv = cv2.invertAffineTransform(M_fwd)   # now maps current → source ✓
+        return _blend_patch(tgt_bgr, crop_rgba, x1_c, y1_c, M_inv)
 
     applied = 0
-    identity = np.eye(2, 3, dtype=np.float32)
 
-    # Apply directly to the source frame (no warp needed)
+    # Source frame: drawing sits at its natural position (identity inverse map)
     if start_idx <= cur_idx <= end_idx:
         tgt_bgr = cv2.imread(frame_paths[cur_idx])
         if tgt_bgr is not None:
-            cv2.imwrite(frame_paths[cur_idx], _apply_M(tgt_bgr, identity))
+            M_id = np.float32([[1, 0, 0], [0, 1, 0]])   # identity: dst→src is identity
+            cv2.imwrite(frame_paths[cur_idx],
+                        _blend_patch(tgt_bgr, crop_rgba, x1_c, y1_c, M_id))
             applied += 1
 
     # ── Forward pass: cur_idx+1 → end_idx ────────────────────────────
     prev_gray = src_gray
     fwd_pts   = initial_pts.copy()
     for i in range(cur_idx + 1, end_idx + 1):
-        curr_bgr  = cv2.imread(frame_paths[i])
+        curr_bgr = cv2.imread(frame_paths[i])
         if curr_bgr is None:
             continue
         curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
-        M, fwd_pts, n_valid = _lk_step(prev_gray, curr_gray, fwd_pts, initial_pts)
-        if M is not None:
-            cv2.imwrite(frame_paths[i], _apply_M(curr_bgr, M))
+        M_fwd, fwd_pts, _ = _lk_step(prev_gray, curr_gray, fwd_pts)
+        if M_fwd is not None:
+            cv2.imwrite(frame_paths[i], _apply_fwd(curr_bgr, M_fwd))
             applied += 1
         prev_gray = curr_gray
 
@@ -1062,13 +1152,13 @@ def on_fe_apply_person_tracked(editor_value, frame_num, range_start, range_end,
     prev_gray = src_gray
     bwd_pts   = initial_pts.copy()
     for i in range(cur_idx - 1, start_idx - 1, -1):
-        curr_bgr  = cv2.imread(frame_paths[i])
+        curr_bgr = cv2.imread(frame_paths[i])
         if curr_bgr is None:
             continue
         curr_gray = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY)
-        M, bwd_pts, n_valid = _lk_step(prev_gray, curr_gray, bwd_pts, initial_pts)
-        if M is not None:
-            cv2.imwrite(frame_paths[i], _apply_M(curr_bgr, M))
+        M_fwd, bwd_pts, _ = _lk_step(prev_gray, curr_gray, bwd_pts)
+        if M_fwd is not None:
+            cv2.imwrite(frame_paths[i], _apply_fwd(curr_bgr, M_fwd))
             applied += 1
         prev_gray = curr_gray
 
@@ -1381,90 +1471,6 @@ def _fe_output_dir(frame_paths: list, orig_paths: list) -> str:
     return out or '.'
 
 
-def _fe_apply_mask_to_facesets(mask_data: dict):
-    """Temporarily set mask_offsets on all faces in INPUT_FACESETS from *mask_data*."""
-    offsets = [
-        mask_data.get('top',              roop.globals.CFG.mask_top),
-        mask_data.get('bottom',           roop.globals.CFG.mask_bottom),
-        mask_data.get('left',             roop.globals.CFG.mask_left),
-        mask_data.get('right',            roop.globals.CFG.mask_right),
-        mask_data.get('face_mask_blend',  roop.globals.CFG.face_mask_blend),
-        mask_data.get('mouth_mask_blend', roop.globals.CFG.mouth_mask_blend),
-        mask_data.get('mouth_top',        roop.globals.CFG.mouth_top_scale),
-        mask_data.get('mouth_bottom',     roop.globals.CFG.mouth_bottom_scale),
-        mask_data.get('mouth_left',       roop.globals.CFG.mouth_left_scale),
-        mask_data.get('mouth_right',      roop.globals.CFG.mouth_right_scale),
-    ]
-    for fs in roop.globals.INPUT_FACESETS:
-        for face in fs.faces:
-            face.mask_offsets = list(offsets)
-
-
-def _fe_reprocess_frames(orig_paths: list, orig_dir: str, meta: dict, fps: float):
-    """Reprocess each original frame through live_swap with per-frame masks.
-
-    Returns: (output_frames_dir: str, image_format: str) or (None, None) on failure.
-    The caller is responsible for compiling the output frames.
-    """
-    import tempfile
-    from roop.core import live_swap, get_processing_plugins
-    from roop.ProcessOptions import ProcessOptions
-
-    if not orig_paths or not roop.globals.INPUT_FACESETS:
-        return None, None
-
-    image_format = meta.get('image_format', roop.globals.CFG.output_image_format)
-
-    # Build a stable ProcessOptions for this compile run (mask_json is per-frame)
-    masking_engine = None  # no clip/text mask — per-frame canvas mask is passed via mask_json
-    plugins  = get_processing_plugins(masking_engine)
-
-    out_dir = tempfile.mkdtemp(prefix='fe_reprocess_')
-    ok_count = 0
-    for i, orig_path in enumerate(orig_paths):
-        frame_bgr = cv2.imread(orig_path)
-        if frame_bgr is None:
-            print(f"[FrameEditor] could not read {orig_path}")
-            continue
-
-        basename  = os.path.basename(orig_path)
-        mask_data = util.load_frame_mask(orig_dir, basename) if orig_dir else {}
-
-        # Apply per-frame mask_offsets to facesets
-        _fe_apply_mask_to_facesets(mask_data)
-
-        canvas_mask_json = (mask_data.get('mask_json') or '').strip() or None
-
-        options = ProcessOptions(
-            plugins,
-            roop.globals.distance_threshold,
-            roop.globals.blend_ratio,
-            roop.globals.face_swap_mode,
-            0,                    # face_index
-            None,                 # clip_text
-            canvas_mask_json,
-            1,                    # num_steps
-            roop.globals.subsample_size if hasattr(roop.globals, 'subsample_size') else 128,
-            roop.globals.CFG.show_mask_offsets,
-            roop.globals.CFG.restore_original_mouth,
-            use_3d_recon=False,
-        )
-
-        result = live_swap(frame_bgr, options)
-        if result is None:
-            result = frame_bgr
-
-        out_path = os.path.join(out_dir, f"{i+1:06d}.{image_format}")
-        cv2.imwrite(out_path, result)
-        ok_count += 1
-
-    if ok_count == 0:
-        import shutil
-        shutil.rmtree(out_dir, ignore_errors=True)
-        return None, None
-
-    return out_dir, image_format
-
 
 def on_fe_compile_current_mp4(frame_paths: list, fps, meta: dict):
     """Stitch the current processed frame images directly into an MP4 (no face swap)."""
@@ -1480,9 +1486,21 @@ def on_fe_compile_current_mp4(frame_paths: list, fps, meta: dict):
     output_path  = os.path.join(_fe_output_dir(frame_paths, []),
                                 f"{source_base}_compiled.mp4")
 
-    success = ffmpeg.create_video_from_frames_dir(frames_dir, output_path, fps_val, image_format)
-    if not success or not os.path.isfile(output_path):
+    # Compile frames to a silent intermediate, then mux in source audio if available.
+    source_path = meta.get('source_path', '')
+    has_audio   = bool(source_path) and util.is_video(source_path)
+    vid_only    = (output_path + '__noaudio.mp4') if has_audio else output_path
+
+    success = ffmpeg.create_video_from_frames_dir(frames_dir, vid_only, fps_val, image_format)
+    if not success or not os.path.isfile(vid_only):
         return (*_no, "❌ MP4 compilation failed — check the console for ffmpeg errors.")
+
+    if has_audio:
+        audio_ok = ffmpeg.restore_audio(vid_only, source_path, None, None, output_path)
+        if os.path.isfile(vid_only):
+            os.remove(vid_only)
+        if not audio_ok or not os.path.isfile(output_path):
+            return (*_no, "❌ Audio restoration failed — check the console for ffmpeg errors.")
 
     return (
         gr.update(visible=False),
@@ -1505,7 +1523,6 @@ def on_fe_compile_current_gif(frame_paths: list, fps, meta: dict):
     output_path  = os.path.join(_fe_output_dir(frame_paths, []),
                                 f"{source_base}_compiled.gif")
 
-    # Detect frame dimensions from first frame
     width = height = 0
     try:
         with Image.open(frame_paths[0]) as img:
@@ -1523,89 +1540,4 @@ def on_fe_compile_current_gif(frame_paths: list, fps, meta: dict):
         gr.update(visible=True, value=output_path),
         gr.update(visible=False),
         f"✅ Compiled → **{os.path.basename(output_path)}**",
-    )
-
-
-def on_fe_compile_mp4(frame_paths: list, orig_paths: list, orig_dir: str,
-                       meta: dict, fps):
-    """Reprocess original frames through face-swap with per-frame masks, compile MP4."""
-    _no = (gr.update(visible=False), gr.update(visible=False))
-    if not orig_paths and not frame_paths:
-        return (*_no, "⚠️ No frames loaded.")
-    if not orig_paths:
-        return (*_no, "⚠️ No original frames found — run with 'Keep Frames' enabled.")
-    if not roop.globals.INPUT_FACESETS:
-        return (*_no, "⚠️ No source face loaded — load a source image in the Face Swap tab first.")
-
-    fps_val      = float(fps) if fps else float(meta.get('fps', 24.0))
-    source       = meta.get('source', 'output')
-    source_base  = os.path.splitext(source)[0]
-    output_path  = os.path.join(_fe_output_dir(frame_paths, orig_paths),
-                                f"{source_base}_reprocessed.mp4")
-
-    out_dir, image_format = _fe_reprocess_frames(orig_paths, orig_dir, meta, fps_val)
-    if out_dir is None:
-        return (*_no, "❌ Reprocessing failed — check the console for errors.")
-
-    import shutil
-    try:
-        success = ffmpeg.create_video_from_frames_dir(out_dir, output_path, fps_val, image_format)
-    finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
-
-    if not success or not os.path.isfile(output_path):
-        return (*_no, "❌ MP4 compilation failed — check the console for ffmpeg errors.")
-
-    return (
-        gr.update(visible=False),
-        gr.update(visible=True, value=output_path),
-        f"✅ Reprocessed → **{os.path.basename(output_path)}**",
-    )
-
-
-def on_fe_compile_gif(frame_paths: list, orig_paths: list, orig_dir: str,
-                       meta: dict, fps):
-    """Reprocess original frames through face-swap with per-frame masks, compile GIF."""
-    _no = (gr.update(visible=False), gr.update(visible=False))
-    if not orig_paths and not frame_paths:
-        return (*_no, "⚠️ No frames loaded.")
-    if not orig_paths:
-        return (*_no, "⚠️ No original frames found — run with 'Keep Frames' enabled.")
-    if not roop.globals.INPUT_FACESETS:
-        return (*_no, "⚠️ No source face loaded — load a source image in the Face Swap tab first.")
-
-    fps_val      = float(fps) if fps else float(meta.get('fps', 24.0))
-    source       = meta.get('source', 'output')
-    source_base  = os.path.splitext(source)[0]
-
-    # Detect frame dimensions from first orig frame
-    width = height = 0
-    try:
-        with Image.open(orig_paths[0]) as img:
-            width, height = img.size
-    except Exception:
-        pass
-
-    output_path = os.path.join(_fe_output_dir(frame_paths, orig_paths),
-                               f"{source_base}_reprocessed.gif")
-
-    out_dir, image_format = _fe_reprocess_frames(orig_paths, orig_dir, meta, fps_val)
-    if out_dir is None:
-        return (*_no, "❌ Reprocessing failed — check the console for errors.")
-
-    import shutil
-    try:
-        success = ffmpeg.create_gif_from_frames_dir(
-            out_dir, output_path, fps_val, width, height, image_format
-        )
-    finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
-
-    if not success or not os.path.isfile(output_path):
-        return (*_no, "❌ GIF compilation failed — check the console for ffmpeg errors.")
-
-    return (
-        gr.update(visible=True, value=output_path),
-        gr.update(visible=False),
-        f"✅ Reprocessed → **{os.path.basename(output_path)}**",
     )

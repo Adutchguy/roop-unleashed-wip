@@ -14,6 +14,16 @@ from roop.typing import Frame, Face
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread, Lock
 from queue import Queue
+
+# Serialises GPU inference across all worker threads.
+# TensorRT and the CUDA execution provider are NOT safe for concurrent use
+# from multiple Python threads on the same InferenceSession: concurrent
+# cudaMemcpyAsync calls corrupt the CUDA context, producing error 999.
+# All frame-level work that touches the GPU (swap + enhance) is guarded by
+# this lock so at most one thread executes GPU ops at a time.
+# CPU-bound work (file I/O, face detection on CPU, progress updates) is
+# still parallelised freely between acquisitions of the lock.
+_gpu_lock = Lock()
 from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
@@ -289,12 +299,31 @@ class ProcessMgr():
                 return
             temp_frame = cv2.imdecode(np.fromfile(f, dtype=np.uint8), cv2.IMREAD_COLOR)
             if temp_frame is not None:
-                if self.options.frame_processing:
-                    for p in self.processors:
-                        frame = p.Run(temp_frame)
-                    resimg = frame
-                else:
-                    resimg = self.process_frame(temp_frame)
+                try:
+                    # Acquire the GPU lock before any GPU-bound work.
+                    # Multiple worker threads share the same ONNX sessions; concurrent
+                    # cudaMemcpyAsync calls from different threads corrupt TensorRT's
+                    # CUDA context (error 999).  Serialising here is safe: each thread
+                    # reads its own frame from disk, then takes the lock only for the
+                    # GPU-bound portion (swap + enhance).
+                    with _gpu_lock:
+                        if self.options.frame_processing:
+                            frame = temp_frame
+                            for p in self.processors:
+                                frame = p.Run(frame)
+                            resimg = frame
+                        else:
+                            resimg = self.process_frame(temp_frame)
+                except RuntimeError as exc:
+                    # Catch per-frame GPU failures (CUDA error 999, OOM, etc.) so a
+                    # single bad frame does not abort the entire batch.  Write the
+                    # unprocessed original frame instead so the output is continuous.
+                    err_str = str(exc)
+                    if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
+                        print(f'[ProcessMgr] GPU error on {f} — writing original frame: {err_str[:200]}')
+                        resimg = temp_frame   # fall back to unmodified frame
+                    else:
+                        raise   # non-GPU errors propagate normally
                 if resimg is not None:
                     i = source_files.index(f)
                     cv2.imwrite(target_files[i], resimg)
@@ -340,12 +369,22 @@ class ProcessMgr():
                 self.processed_queue[threadindex].put((False, None))
                 return
             else:
-                if self.options.frame_processing:
-                    for p in self.processors:
-                        frame = p.Run(frame)
-                    resimg = frame
-                else:
-                    resimg = self.process_frame(frame)
+                try:
+                    with _gpu_lock:
+                        if self.options.frame_processing:
+                            out = frame
+                            for p in self.processors:
+                                out = p.Run(out)
+                            resimg = out
+                        else:
+                            resimg = self.process_frame(frame)
+                except RuntimeError as exc:
+                    err_str = str(exc)
+                    if 'CUDA' in err_str or 'cuda' in err_str or 'onnxruntime' in err_str.lower():
+                        print(f'[ProcessMgr] GPU error on video frame {threadindex} — writing original: {err_str[:200]}')
+                        resimg = frame  # fall back to unmodified frame
+                    else:
+                        raise
                 self.processed_queue[threadindex].put((True, resimg))
                 del frame
                 progress()

@@ -75,6 +75,7 @@ class Settings:
         self.use_frontalization = self.default_get(data, 'use_frontalization', False)
         self.frontalization_threshold = self.default_get(data, 'frontalization_threshold', 30.0)
         self.swap_model = self.default_get(data, 'swap_model', 'inswapper')
+        self.det_score_threshold = self.default_get(data, 'det_score_threshold', 0.5)
 
 
 
@@ -137,6 +138,8 @@ class Settings:
             'frontalization_threshold': self.frontalization_threshold,
             # Swap model
             'swap_model': self.swap_model,
+            # Detection
+            'det_score_threshold': self.det_score_threshold,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

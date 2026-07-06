@@ -15,6 +15,7 @@ FACE_ANALYSER = None
 THREAD_LOCK_ANALYSER = threading.Lock()
 THREAD_LOCK_SWAPPER = threading.Lock()
 FACE_SWAPPER = None
+_current_det_thresh = None
 
 
 def release_face_analyser():
@@ -26,27 +27,31 @@ def release_face_analyser():
 
 
 def get_face_analyser() -> Any:
-    global FACE_ANALYSER
+    global FACE_ANALYSER, _current_det_thresh
 
     with THREAD_LOCK_ANALYSER:
-        if FACE_ANALYSER is None or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis:
+        desired_thresh = getattr(roop.globals, 'det_score_threshold', 0.5)
+        if (FACE_ANALYSER is None
+                or roop.globals.g_current_face_analysis != roop.globals.g_desired_face_analysis
+                or _current_det_thresh != desired_thresh):
             model_path = resolve_relative_path('..')
-            # removed genderage
             allowed_modules = roop.globals.g_desired_face_analysis
             roop.globals.g_current_face_analysis = roop.globals.g_desired_face_analysis
+            _current_det_thresh = desired_thresh
             if roop.globals.CFG.force_cpu:
                 print("Forcing CPU for Face Analysis")
                 FACE_ANALYSER = insightface.app.FaceAnalysis(
                     name="buffalo_l",
-                    root=model_path, providers=["CPUExecutionProvider"],allowed_modules=allowed_modules
+                    root=model_path, providers=["CPUExecutionProvider"], allowed_modules=allowed_modules
                 )
             else:
                 FACE_ANALYSER = insightface.app.FaceAnalysis(
-                    name="buffalo_l", root=model_path, providers=roop.globals.execution_providers,allowed_modules=allowed_modules
+                    name="buffalo_l", root=model_path, providers=roop.globals.execution_providers, allowed_modules=allowed_modules
                 )
             FACE_ANALYSER.prepare(
                 ctx_id=0,
                 det_size=(640, 640) if roop.globals.default_det_size else (320, 320),
+                det_thresh=desired_thresh,
             )
     return FACE_ANALYSER
 

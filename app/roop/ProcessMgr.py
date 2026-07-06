@@ -41,6 +41,76 @@ class eNoFaceAction():
 
 
 
+def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray):
+    """When full-frame detection misses, crop last-known face region and retry.
+
+    Remaps the detected face's 2-D coordinates back to full-frame space so the
+    result can be used in process_face() without any special casing.
+    Returns a Face object in full-frame coords, or None.
+    """
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = last_bbox.astype(int)
+    face_w = max(1, x2 - x1)
+    face_h = max(1, y2 - y1)
+    pad = int(max(face_w, face_h) * 0.5)          # 50 % padding on each side
+
+    rx1 = max(0, x1 - pad)
+    ry1 = max(0, y1 - pad)
+    rx2 = min(w, x2 + pad)
+    ry2 = min(h, y2 + pad)
+
+    crop = frame[ry1:ry2, rx1:rx2]
+    if crop.size == 0 or crop.shape[0] < 32 or crop.shape[1] < 32:
+        return None
+
+    # Upscale small crops so the detector can resolve them
+    crop_size = max(rx2 - rx1, ry2 - ry1)
+    scale = max(1.0, 320.0 / crop_size)
+    if scale > 1.1:
+        new_w = int((rx2 - rx1) * scale)
+        new_h = int((ry2 - ry1) * scale)
+        crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    else:
+        scale = 1.0
+
+    try:
+        from roop.face_util import get_face_analyser
+        faces = get_face_analyser().get(crop)
+        if not faces:
+            return None
+        face = min(faces, key=lambda f: f.bbox[0])
+    except Exception:
+        return None
+
+    # Remap all 2-D coordinates from (scaled) crop space to full-frame space
+    def _remap2d(pts):
+        if pts is None:
+            return None
+        pts = pts.copy().astype(np.float32)
+        pts[:, 0] = pts[:, 0] / scale + rx1
+        pts[:, 1] = pts[:, 1] / scale + ry1
+        return pts
+
+    face.bbox = face.bbox.copy().astype(np.float32)
+    face.bbox[0] = face.bbox[0] / scale + rx1
+    face.bbox[1] = face.bbox[1] / scale + ry1
+    face.bbox[2] = face.bbox[2] / scale + rx1
+    face.bbox[3] = face.bbox[3] / scale + ry1
+
+    if face.kps is not None:
+        face.kps = _remap2d(face.kps)
+    if getattr(face, 'landmark_2d_106', None) is not None:
+        face.landmark_2d_106 = _remap2d(face.landmark_2d_106)
+    if getattr(face, 'landmark_3d_68', None) is not None:
+        lm3d = face.landmark_3d_68.copy().astype(np.float32)
+        lm3d[:, 0] = lm3d[:, 0] / scale + rx1
+        lm3d[:, 1] = lm3d[:, 1] / scale + ry1
+        lm3d[:, 2] = lm3d[:, 2] / scale          # depth scales with image scale
+        face.landmark_3d_68 = lm3d
+
+    return face
+
+
 def create_queue(temp_frame_paths: List[str]) -> Queue[str]:
     queue: Queue[str] = Queue()
     for frame_path in temp_frame_paths:
@@ -95,6 +165,7 @@ class ProcessMgr():
         self.total_frames = 0
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
+        self.last_found_bboxes = None  # np.ndarray of shape (N, 4) — last detected face bboxes
         self.output_to_file = None
         self.output_to_cam = None
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
@@ -116,6 +187,7 @@ class ProcessMgr():
         self.target_face_datas = target_faces
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
+        self.last_found_bboxes = None
         self.options = options
         devicename = get_device()
 
@@ -550,16 +622,31 @@ class ProcessMgr():
 
         if self.options.swap_mode == "first":
             face = get_first_face(frame)
+            # Temporal hint: if detection failed, retry in the last-known face region
+            if face is None and self.last_found_bboxes is not None:
+                face = _detect_face_in_roi(frame, self.last_found_bboxes[0])
             if face is None:
                 return num_faces_found, frame
+            self.last_found_bboxes = np.array([face.bbox])   # cache for next frame
             num_faces_found += 1
             temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
             del face
 
         else:
             faces = get_all_faces(frame)
+            # Temporal hint: if detection failed, retry each last-known face region
+            if faces is None and self.last_found_bboxes is not None:
+                recovered = []
+                for bbox in self.last_found_bboxes:
+                    f = _detect_face_in_roi(frame, bbox)
+                    if f is not None:
+                        recovered.append(f)
+                if recovered:
+                    faces = recovered
             if faces is None:
                 return num_faces_found, frame
+            # Cache bboxes from all found faces for next frame
+            self.last_found_bboxes = np.array([f.bbox for f in faces])
 
             if self.options.swap_mode == "all":
                 for face in faces:

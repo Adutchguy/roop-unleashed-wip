@@ -38,6 +38,7 @@ def settings_tab():
             with gr.Column():
                 settings_controls.append(gr.Dropdown(providerlist, label="Provider", value=roop.globals.CFG.provider, elem_id='provider', interactive=True))
                 chk_det_size = gr.Checkbox(label="Use default Det-Size", value=True, elem_id='default_det_size', interactive=True)
+                det_score_threshold = gr.Slider(0.3, 0.8, value=roop.globals.CFG.det_score_threshold, label="Face Detection Score Threshold", info='Lower = detect more (fewer missed frames); default: 0.5', step=0.05, interactive=True)
                 settings_controls.append(gr.Checkbox(label="Force CPU for Face Analyser", value=roop.globals.CFG.force_cpu, elem_id='force_cpu', interactive=True))
                 max_threads = gr.Slider(1, 32, value=roop.globals.CFG.max_threads, label="Max. Number of Threads", info='default: 3', step=1.0, interactive=True)
             with gr.Column():
@@ -63,6 +64,7 @@ def settings_tab():
     max_threads.input(fn=lambda a,b='max_threads':on_settings_changed_misc(a,b), inputs=[max_threads])
     memory_limit.input(fn=lambda a,b='memory_limit':on_settings_changed_misc(a,b), inputs=[memory_limit])
     video_quality.input(fn=lambda a,b='video_quality':on_settings_changed_misc(a,b), inputs=[video_quality])
+    det_score_threshold.input(fn=on_det_score_threshold_changed, inputs=[det_score_threshold])
 
     button_clean_temp.click(fn=clean_temp)
     button_apply_settings.click(apply_settings, inputs=[input_server_name, input_server_port, output_template])
@@ -108,6 +110,11 @@ def on_option_changed(evt: gr.SelectData):
             setattr(roop.globals, attribname, evt.value)
             return
     raise gr.Error(f'Unhandled Setting for {evt.target}')
+
+
+def on_det_score_threshold_changed(new_val):
+    roop.globals.det_score_threshold = new_val
+    on_settings_changed_misc(new_val, 'det_score_threshold')
 
 
 def on_settings_changed_misc(new_val, attribname):

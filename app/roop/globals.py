@@ -33,6 +33,7 @@ face_swap_mode = 'DFL XSeg'
 blend_ratio = 0.80
 distance_threshold = 1
 default_det_size = True
+det_score_threshold = 0.5
 
 no_face_action = 1
 

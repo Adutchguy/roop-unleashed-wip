@@ -75,6 +75,14 @@ def faceswap_tab():
                             value=roop.globals.CFG.restore_original_mouth,
                             interactive=True,
                         )
+                        sld_inner_mouth_blend = gr.Slider(
+                            0.0, 1.0,
+                            value=roop.globals.CFG.inner_mouth_blend,
+                            step=0.05,
+                            label="Inner Mouth Blend (teeth/tongue)",
+                            info="Blends original target teeth/tongue back over swap artefacts. 0 = off, 1 = full original inner mouth.",
+                            interactive=True,
+                        )
                         chk_use_3d_recon = gr.Checkbox(
                             label="🧊 3D source pose matching (experimental)",
                             value=roop.globals.CFG.use_3d_recon,
@@ -295,6 +303,7 @@ def faceswap_tab():
     ui.globals.ui_clip_text = clip_text
     ui.globals.ui_chk_showmaskoffsets = chk_showmaskoffsets
     ui.globals.ui_chk_restoreoriginalmouth = chk_restoreoriginalmouth
+    ui.globals.ui_sld_inner_mouth_blend = sld_inner_mouth_blend
     ui.globals.ui_chk_use_3d_recon = chk_use_3d_recon
     ui.globals.ui_chk_use_source_bank = chk_use_source_bank
     ui.globals.ui_chk_use_frontalization = chk_use_frontalization
@@ -314,7 +323,8 @@ def faceswap_tab():
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, mask_json_store, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale,
                         chk_use_3d_recon, mask_per_frame_store,
-                        chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model]
+                        chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model,
+                        sld_inner_mouth_blend]
     previewoutputs = [previewimage, preview_frame_num, original_frame_img]
     input_faces.select(on_select_input_face, None, None).success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     
@@ -338,6 +348,7 @@ def faceswap_tab():
     mouth_right_scale.release(fn=on_mouth_right_scale_changed, inputs=[mouth_right_scale], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_showmaskoffsets.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_restoreoriginalmouth.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    sld_inner_mouth_blend.release(fn=on_inner_mouth_blend_changed, inputs=[sld_inner_mouth_blend], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     selected_mask_engine.change(fn=on_mask_engine_changed, inputs=[selected_mask_engine], outputs=[clip_text], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
 
     target_faces.select(on_select_target_face, None, None)
@@ -355,7 +366,8 @@ def faceswap_tab():
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, mask_json_store,
                     chk_use_3d_recon, mask_per_frame_store,
-                    chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model],
+                    chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model,
+                    sld_inner_mouth_blend],
         outputs=[bt_start, bt_stop], show_progress='full')
 
     bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop], queue=False)
@@ -480,6 +492,9 @@ def on_mask_right_changed(mask_offset):
 
 def on_face_mask_blend_changed(value):
     set_mask_offset(4, value)
+
+def on_inner_mouth_blend_changed(value):
+    roop.globals.CFG.inner_mouth_blend = value
 
 def on_mouth_mask_blend_changed(value):
     set_mask_offset(5, value)
@@ -890,7 +905,8 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
                               selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
                               use_3d_recon=False, mask_per_frame_json="",
                               use_source_bank=False, use_frontalization=False,
-                              frontalization_threshold=25.0, swap_model='inswapper'):
+                              frontalization_threshold=25.0, swap_model='inswapper',
+                              inner_mouth_blend=0.0):
     global SELECTED_INPUT_FACE_INDEX, current_video_fps, _last_swapped_preview, _last_preview_options
 
     from roop.core import live_swap, get_processing_plugins
@@ -989,7 +1005,8 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
                               use_source_bank=use_source_bank,
                               use_frontalization=use_frontalization,
                               frontalization_threshold=frontalization_threshold,
-                              swap_model=swap_model)
+                              swap_model=swap_model,
+                              inner_mouth_blend=float(inner_mouth_blend))
     # Store so FBF frame navigation can regenerate swap previews for arbitrary frames.
     _last_preview_options = options
 
@@ -2304,6 +2321,7 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
                 use_3d_recon=False, mask_per_frame_json="",
                 use_source_bank=False, use_frontalization=False,
                 frontalization_threshold=25.0, swap_model='inswapper',
+                inner_mouth_blend=0.0,
                 progress=gr.Progress()):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
@@ -2353,7 +2371,8 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
                           use_source_bank=use_source_bank,
                           use_frontalization=use_frontalization,
                           frontalization_threshold=frontalization_threshold,
-                          swap_model=swap_model)
+                          swap_model=swap_model,
+                          inner_mouth_blend=float(inner_mouth_blend))
     is_processing = False
     yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
 

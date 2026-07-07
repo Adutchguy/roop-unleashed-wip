@@ -41,6 +41,12 @@ class eNoFaceAction():
 
 
 
+# Inner-lip landmark indices in the insightface 106-point 2-D model.
+# Derived from the landmarks106_to_68 map: these are the 106-pt positions
+# that correspond to 68-pt inner-lip points 60–67 (the mouth-opening ring).
+_INNER_LIP_IDX = [54, 57, 60, 62, 65, 66, 69, 70]
+
+
 def _detect_face_in_roi(frame: np.ndarray, last_bbox: np.ndarray):
     """When full-frame detection misses, crop last-known face region and retry.
 
@@ -1081,6 +1087,19 @@ class ProcessMgr():
         else:
             result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
 
+        # ── Inner-mouth (teeth / tongue) blend ───────────────────────────────
+        # Blends the original target frame back into the inner-lip opening so
+        # inswapper artefacts on teeth and tongue are replaced with the crisp
+        # source pixels.  Only affects the area enclosed by the 8 inner-lip
+        # landmarks — the outer lips and the rest of the face are untouched.
+        _imb = getattr(self.options, 'inner_mouth_blend', 0.0)
+        if _imb > 0.0 and face_lm is not None:
+            _inner_mask = self.create_inner_mouth_mask(face_lm, frame.shape, mask_offsets[4])
+            if _inner_mask is not None:
+                _m3 = _inner_mask[:, :, np.newaxis]
+                result = (result.astype(np.float32) * (1.0 - _imb * _m3) +
+                          frame.astype(np.float32) * (_imb * _m3)).astype(np.uint8)
+
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame, mask_offsets)
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
@@ -1322,6 +1341,31 @@ class ProcessMgr():
             # Landmark points in cutout-local coordinates for polygon masking
             mouth_mask_points = mouth_points - np.array([min_x, min_y], dtype=np.int32)
         return mouth_cutout, (min_x, min_y, max_x, max_y), mouth_mask_points
+
+    def create_inner_mouth_mask(self, landmarks_2d: np.ndarray, frame_shape: tuple, blend_amount: float = 20.0):
+        """Feathered mask over the inner-lip opening (teeth / tongue area).
+
+        Uses the 8 inner-lip landmark points from the insightface 106-pt model
+        (indices 54, 57, 60, 62, 65, 66, 69, 70) which form the mouth-opening
+        ring — the boundary between the lips and the visible teeth / tongue.
+
+        Returns a float32 H×W mask in [0,1], or None if landmarks are invalid.
+        """
+        pts = landmarks_2d[_INNER_LIP_IDX].astype(np.int32)
+        hull = cv2.convexHull(pts)
+        mask = np.zeros(frame_shape[:2], dtype=np.uint8)
+        cv2.fillConvexPoly(mask, hull, 255)
+
+        mouth_w = max(1, int(np.ptp(pts[:, 0])))
+        mouth_h = max(1, int(np.ptp(pts[:, 1])))
+        face_size = max(1, int(np.sqrt(mouth_w * mouth_h)))
+        blur_px = max(1, int(face_size * blend_amount / 300))
+        mask = cv2.GaussianBlur(mask.astype(np.float32), (blur_px * 2 + 1, blur_px * 2 + 1), 0)
+
+        max_val = mask.max()
+        if max_val <= 0:
+            return None
+        return mask / max_val
 
     def create_feathered_mask(self, shape, feather_amount=30):
         mask = np.zeros(shape[:2], dtype=np.float32)

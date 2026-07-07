@@ -76,6 +76,7 @@ class Settings:
         self.frontalization_threshold = self.default_get(data, 'frontalization_threshold', 30.0)
         self.swap_model = self.default_get(data, 'swap_model', 'inswapper')
         self.det_score_threshold = self.default_get(data, 'det_score_threshold', 0.5)
+        self.inner_mouth_blend = self.default_get(data, 'inner_mouth_blend', 0.0)
 
 
 
@@ -140,6 +141,7 @@ class Settings:
             'swap_model': self.swap_model,
             # Detection
             'det_score_threshold': self.det_score_threshold,
+            'inner_mouth_blend': self.inner_mouth_blend,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

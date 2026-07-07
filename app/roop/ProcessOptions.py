@@ -1,7 +1,8 @@
 class ProcessOptions:
 
     def __init__(self, processordefines:dict, face_distance,  blend_ratio, swap_mode, selected_index, masking_text, imagemask, num_steps, subsample_size, show_face_area, restore_original_mouth, show_mask=False, use_3d_recon=False,
-                 use_source_bank=False, use_frontalization=False, frontalization_threshold=25.0, swap_model='inswapper'):
+                 use_source_bank=False, use_frontalization=False, frontalization_threshold=25.0, swap_model='inswapper',
+                 inner_mouth_blend=0.0):
         self.processors = processordefines
         self.face_distance_threshold = face_distance
         self.blend_ratio = blend_ratio
@@ -15,6 +16,7 @@ class ProcessOptions:
         self.subsample_size = subsample_size
         self.restore_original_mouth = restore_original_mouth
         self.max_num_reuse_frame = 15
+        self.inner_mouth_blend = inner_mouth_blend
         # 3D source pose matching
         self.use_3d_recon = use_3d_recon
         # Multi-angle source bank (Option 1)

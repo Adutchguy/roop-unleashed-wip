@@ -17,7 +17,6 @@ ui_num_swap_steps = None
 ui_max_face_distance = None
 ui_video_swapping_method = None
 ui_no_face_action = None
-ui_vr_mode = None
 ui_autorotate = None
 ui_skip_audio = None
 ui_keep_frames = None

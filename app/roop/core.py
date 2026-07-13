@@ -238,65 +238,6 @@ def get_processing_plugins(masking_engine, swap_model='inswapper'):
     return processors
 
 
-def get_face_crop_from_frame(frame_bgr) -> str:
-    """Return a base64 PNG data-URL of the canonical 512×512 aligned face crop from *frame_bgr*.
-
-    Replicates the same autorotation pre-processing that ProcessMgr.process_face uses, so
-    the crop shown in the Frame Editor mask modal exactly matches the coordinate space the
-    processor operates in.  Returns empty string when no face is detected.
-    """
-    import base64 as _b64
-    import cv2 as _cv2
-    from roop.face_util import get_first_face, align_crop, rotate_anticlockwise, rotate_clockwise
-
-    if frame_bgr is None:
-        return ""
-
-    def _rotation_action(face, frame):
-        bbox_w = face.bbox[2] - face.bbox[0]
-        bbox_h = face.bbox[3] - face.bbox[1]
-        if bbox_w <= bbox_h:
-            return None
-        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
-            forehead_x = face.landmark_2d_106[72][0]
-            chin_x     = face.landmark_2d_106[0][0]
-            if chin_x < forehead_x:
-                return "rotate_anticlockwise"
-            if forehead_x < chin_x:
-                return "rotate_clockwise"
-        fh, fw = frame.shape[:2]
-        bbox_cx = face.bbox[0] + bbox_w / 2.0
-        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
-
-    face = get_first_face(frame_bgr)
-    if face is None or not hasattr(face, 'kps') or face.kps is None:
-        return ""
-
-    frame = frame_bgr.copy()
-    if roop.globals.autorotate_faces:
-        action = _rotation_action(face, frame)
-        if action is not None:
-            x0, y0, x1, y1 = face.bbox.astype(int)
-            offs = int(max(x1 - x0, y1 - y0) * 0.25)
-            x0m = max(0, x0 - offs); y0m = max(0, y0 - offs)
-            x1m = min(frame.shape[1], x1 + offs); y1m = min(frame.shape[0], y1 + offs)
-            cut = frame[y0m:y1m, x0m:x1m]
-            if action == "rotate_anticlockwise":
-                cut = rotate_anticlockwise(cut)
-            else:
-                cut = rotate_clockwise(cut)
-            rotface = get_first_face(cut)
-            if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
-                face  = rotface
-                frame = cut
-
-    crop, _ = align_crop(frame, face.kps, 512)
-    ok, buf = _cv2.imencode('.png', crop)
-    if not ok:
-        return ""
-    return "data:image/png;base64," + _b64.b64encode(buf.tobytes()).decode('utf-8')
-
-
 def live_swap(frame, options):
     global _preview_process_mgr
 
@@ -356,7 +297,9 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
                                    use_frontalization: bool = False,
                                    frontalization_threshold: float = 25.0,
                                    swap_model: str = 'inswapper',
-                                   inner_mouth_blend: float = 0.0) -> None:
+                                   inner_mouth_blend: float = 0.0,
+                                   expression_strength: float = 0.0,
+                                   expression_preset=None) -> None:
     """Re-process frames that have a custom per-frame mask.
 
     Strategy:
@@ -413,6 +356,8 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
             frontalization_threshold=frontalization_threshold,
             swap_model=swap_model,
             inner_mouth_blend=inner_mouth_blend,
+            expression_strength=expression_strength,
+            expression_preset=expression_preset,
         )
         result = live_swap(orig_bgr, options)
         if result is not None:
@@ -423,7 +368,8 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
 def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="",
                           use_source_bank=False, use_frontalization=False,
                           frontalization_threshold=25.0, swap_model='inswapper',
-                          inner_mouth_blend=0.0) -> None:
+                          inner_mouth_blend=0.0, expression_strength=0.0,
+                          expression_preset=None) -> None:
     global clip_text, process_mgr
 
     release_resources()
@@ -444,21 +390,25 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               use_frontalization=use_frontalization,
                               frontalization_threshold=frontalization_threshold,
                               swap_model=swap_model,
-                              inner_mouth_blend=inner_mouth_blend)
+                              inner_mouth_blend=inner_mouth_blend,
+                              expression_strength=expression_strength,
+                              expression_preset=expression_preset)
     process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
 
     # Stash per-frame mask map and batch options on globals so batch_process can access them
     roop.globals.mask_per_frame = _parse_per_frame_masks(mask_per_frame_json)
-    roop.globals._batch_selected_index    = selected_index
-    roop.globals._batch_clip_text         = new_clip_text
-    roop.globals._batch_num_steps         = num_swap_steps
-    roop.globals._batch_restore_mouth     = restore_original_mouth
-    roop.globals._batch_use_3d_recon      = use_3d_recon
-    roop.globals._batch_use_source_bank   = use_source_bank
-    roop.globals._batch_use_frontalization= use_frontalization
-    roop.globals._batch_front_threshold   = frontalization_threshold
-    roop.globals._batch_swap_model        = swap_model
-    roop.globals._batch_inner_mouth_blend = inner_mouth_blend
+    roop.globals._batch_selected_index       = selected_index
+    roop.globals._batch_clip_text            = new_clip_text
+    roop.globals._batch_num_steps            = num_swap_steps
+    roop.globals._batch_restore_mouth        = restore_original_mouth
+    roop.globals._batch_use_3d_recon         = use_3d_recon
+    roop.globals._batch_use_source_bank      = use_source_bank
+    roop.globals._batch_use_frontalization   = use_frontalization
+    roop.globals._batch_front_threshold      = frontalization_threshold
+    roop.globals._batch_swap_model           = swap_model
+    roop.globals._batch_inner_mouth_blend    = inner_mouth_blend
+    roop.globals._batch_expression_strength  = expression_strength
+    roop.globals._batch_expression_preset    = expression_preset
 
     batch_process(output_method, files, use_new_method)
     return
@@ -553,7 +503,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     continue
 
                 # Save unswapped originals BEFORE run_batch overwrites them in-place.
-                # Needed for both keep_frames mode (Frame Editor) and per-frame mask re-processing.
+                # Needed for both keep_frames mode and per-frame mask re-processing.
                 per_frame_masks = getattr(roop.globals, 'mask_per_frame', {})
                 needs_originals = roop.globals.keep_frames or bool(per_frame_masks)
                 if needs_originals:
@@ -580,6 +530,8 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                         frontalization_threshold=getattr(roop.globals, '_batch_front_threshold', 25.0),
                         swap_model=getattr(roop.globals, '_batch_swap_model', 'inswapper'),
                         inner_mouth_blend=getattr(roop.globals, '_batch_inner_mouth_blend', 0.0),
+                        expression_strength=getattr(roop.globals, '_batch_expression_strength', 0.0),
+                        expression_preset=getattr(roop.globals, '_batch_expression_preset', None),
                     )
 
                 if roop.globals.wait_after_extraction and temp_frame_paths:
@@ -632,7 +584,16 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
                     if not skip_audio:
-                        ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
+                        skipped = getattr(process_mgr, 'skipped_frame_indices', [])
+                        if skipped:
+                            ok = ffmpeg.restore_audio_dropping_frames(
+                                video_file_name, v.filename, skipped, fps,
+                                v.startframe, v.endframe, destination)
+                            if not ok:
+                                # Fall back to plain restore (better than silence)
+                                ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
+                        else:
+                            ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
                         if os.path.isfile(destination):
                             os.remove(video_file_name)
                     else:

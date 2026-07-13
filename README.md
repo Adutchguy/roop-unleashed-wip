@@ -134,15 +134,103 @@ Additional enhancement models (GFPGAN, GPEN, CodeFormer, etc.) can be downloaded
 4. Optionally enable **Face swap frames** preview to see the result before processing.
 5. Click **▶ Start**.
 
-### Key settings
+---
 
-| Setting | Description |
+## Features
+
+### Face Swap Modes
+
+| Mode | Description |
 |---|---|
-| Provider | `cuda` (default), `tensorrt` (fastest NVIDIA), `cpu` |
-| Enhancer | Post-processing: GPEN, GFPGAN, CodeFormer, DMDNet, RestoreFormer++ |
-| Restore original mouth | Composites the target's original mouth back over the swap |
-| Video swapping method | **In-Memory** (fast, more RAM) or **Extract Frames** (large videos) |
-| Subsample upscale | Internal face resolution: 128 → 256 → 512 px |
+| First found | Swaps the first detected face in each frame |
+| All faces | Swaps every detected face using the selected source |
+| All input faces | Maps each input face to each detected target face in order |
+| Selected face | Swaps only the specific target face chosen in the gallery |
+| All female / All male | Swaps all faces matching the detected gender |
+
+### Enhancers (post-processing)
+
+Applied after the swap to sharpen and restore quality, especially around the eyes and mouth.
+
+| Enhancer | Notes |
+|---|---|
+| GPEN | Fast, good general quality (default) |
+| GFPGAN | Good for natural skin tone |
+| CodeFormer | Strong detail recovery, slower |
+| DMDNet | Sharpest output, best for high-res targets |
+| RestoreFormer++ | High fidelity, slower |
+
+### Masking
+
+- **DFL XSeg** — Neural mask that follows the face outline, excluding hair and background.
+- **Clip2Seg** — Text-guided mask (e.g. `hair,hands`) to exclude specific regions.
+- **Manual canvas mask** — Draw include/exclude regions directly on the face in the preview. Supports per-frame masks for fine-grained control on video.
+- **Mask offsets** — Sliders for top/bottom/left/right crop and edge-blend amount.
+
+### Face Detection & Stability
+
+**Detection score threshold** (Settings tab) — Lowers or raises the confidence required for a face to be detected. Reducing this below the default 0.5 can recover faces the detector would otherwise miss, reducing flicker in video output.
+
+**Temporal ROI hint** — When the detector misses a face in a frame, the last known bounding box is used to crop and re-detect in that region, preventing stutters from brief detection failures mid-video.
+
+**No-face action** — Controls what happens when no face is found in a frame:
+
+| Option | Behaviour |
+|---|---|
+| Use untouched original frame | Output the original frame unmodified |
+| Retry rotated | Try rotating the frame 90° each way before giving up |
+| Skip frame | Drop the frame (may cause video length mismatch) |
+| Skip frame if no similar face | Skip only when no face matches the target embedding |
+| Use last swapped | Reuse the last successfully swapped frame (up to 15 frames) |
+
+### Mouth Controls
+
+**Restore original mouth** — Composites the target's original mouth region back over the swap result. Useful when the swap distorts lips or teeth.
+
+**Inner Mouth Blend** — Independently blends the original target's teeth and tongue back over the swap output within the inner lip boundary only. More surgical than "Restore original mouth" — the outer lips stay swapped, only the inner mouth opening is blended. Controlled by a 0–1 slider (0 = off, 1 = full original inner mouth).
+
+### Expression Warp
+
+Upload an **Expression Reference** image (any photo showing a face with the desired expression — happy, sad, neutral, surprised, etc.) and set the **Expression Warp Strength** slider to warp the swapped face toward that expression.
+
+The warp uses the insightface 106-point 2D landmarks already present in the pipeline — no additional model downloads required. A Thin Plate Spline (TPS) interpolation shifts expression-relevant landmarks (mouth, eyebrows, eye openings) while anchoring the face boundary so the face shape does not drift.
+
+- **Strength 0** — no effect (default)
+- **Strength 0.5** — partial expression blend
+- **Strength 1.0** — full warp toward the reference expression
+
+The expression reference is processed once per batch, so there is no per-frame overhead beyond the warp itself.
+
+### 3D Pose Features (Experimental)
+
+**3D source pose matching** — Warps the source face crop to approximate the target's head pose before ArcFace embedding extraction. Improves swap quality on profile and angled faces by reducing the pose mismatch seen by the swap model.
+
+**Multi-angle source bank** — When a `.fsz` faceset contains multiple images of the same person at different angles, automatically selects the image whose pose best matches each target frame.
+
+### Subsample Pixel Boost
+
+Internally upscales the aligned face before the swap model runs, then downsamples after, effectively running the swap at higher resolution.
+
+| Setting | Internal resolution | Notes |
+|---|---|---|
+| 128 px | 128 × 128 | Model native, fastest |
+| 256 px | 256 × 256 | Good balance (default) |
+| 512 px | 512 × 512 | Highest quality, slower |
+
+### Other Options
+
+- **VR mode** — Processes side-by-side VR video frames.
+- **Auto-rotate faces** — Detects and corrects sideways faces before swapping.
+- **Skip audio** — Strip audio from video output.
+- **Keep frames** — Retain extracted frames after video assembly.
+- **Output method** — File (default), Virtual Camera, or Both.
+- **Video swapping method** — In-Memory processing (fast, higher RAM) or Extract Frames (safer for large videos).
+
+---
+
+## Settings
+
+The Settings tab exposes all persistent options including provider, enhancer defaults, output format, face detection threshold, and mouth blend values. Settings are saved to a YAML config file and restored on next launch.
 
 ---
 
@@ -184,6 +272,9 @@ Use `onnxruntime-gpu==1.19.0` exactly. Newer versions have DLL dependency issues
 **ffmpeg not found**
 Install ffmpeg and ensure it is on your system PATH. [Download here](https://ffmpeg.org/download.html).
 
+**Video flickers or face disappears on some frames**
+Lower the **Detection Score Threshold** in Settings (try 0.35–0.4). The temporal ROI hint will also retry detection in the last known face region automatically.
+
 **Video upload broken after server restart**
 Gradio temp files from the previous session cause an asyncio event loop mismatch. Restart the
 app fully (stop and start again from Pinokio).
@@ -195,7 +286,14 @@ app fully (stop and start again from Pinokio).
 ```
 roop-unleashed-wip/
 ├── app/                    # Application code
-│   ├── roop/               # Core processing (face swap, processors, utilities)
+│   ├── roop/               # Core processing
+│   │   ├── ProcessMgr.py       # Main frame-processing pipeline
+│   │   ├── ProcessOptions.py   # Per-run configuration
+│   │   ├── expression_reenact.py  # TPS expression warp module
+│   │   ├── face_3d_recon.py    # Pose estimation and source crop warping
+│   │   ├── face_frontalize.py  # Target frontalization
+│   │   ├── face_util.py        # Face detection / alignment helpers
+│   │   └── processors/         # Swap, mask, and enhance processor plugins
 │   ├── ui/                 # Gradio web UI
 │   ├── models/             # Downloaded model weights (gitignored)
 │   ├── requirements.txt    # Python dependencies

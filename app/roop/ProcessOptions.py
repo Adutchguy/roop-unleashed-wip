@@ -2,7 +2,8 @@ class ProcessOptions:
 
     def __init__(self, processordefines:dict, face_distance,  blend_ratio, swap_mode, selected_index, masking_text, imagemask, num_steps, subsample_size, show_face_area, restore_original_mouth, show_mask=False, use_3d_recon=False,
                  use_source_bank=False, use_frontalization=False, frontalization_threshold=25.0, swap_model='inswapper',
-                 inner_mouth_blend=0.0):
+                 inner_mouth_blend=0.0, expression_strength=0.0,
+                 expression_preset=None):
         self.processors = processordefines
         self.face_distance_threshold = face_distance
         self.blend_ratio = blend_ratio
@@ -25,3 +26,6 @@ class ProcessOptions:
         self.use_frontalization = use_frontalization
         self.frontalization_threshold = frontalization_threshold
         self.swap_model = swap_model
+        # Expression warp (TPS landmark-based, preset-driven)
+        self.expression_strength = expression_strength  # 0.0 – 1.0
+        self.expression_preset   = expression_preset    # str or None

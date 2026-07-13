@@ -521,7 +521,7 @@ def show_msg(msg: str):
 _SESSION_CFG_KEYS = [
     'face_detection_mode', 'num_swap_steps', 'selected_enhancer', 'max_face_distance',
     'subsample_upscale', 'blend_ratio', 'video_swapping_method', 'no_face_action',
-    'vr_mode', 'autorotate_faces', 'skip_audio', 'keep_frames', 'wait_after_extraction',
+    'autorotate_faces', 'skip_audio', 'keep_frames', 'wait_after_extraction',
     'output_method', 'mask_engine', 'mask_clip_text', 'show_mask_offsets',
     'restore_original_mouth', 'mask_top', 'mask_bottom', 'mask_left', 'mask_right',
     'face_mask_blend', 'mouth_mask_blend',
@@ -541,7 +541,6 @@ def _session_components():
         ui.globals.ui_blend_ratio,
         ui.globals.ui_video_swapping_method,
         ui.globals.ui_no_face_action,
-        ui.globals.ui_vr_mode,
         ui.globals.ui_autorotate,
         ui.globals.ui_skip_audio,
         ui.globals.ui_keep_frames,

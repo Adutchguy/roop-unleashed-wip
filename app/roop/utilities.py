@@ -241,8 +241,8 @@ def get_frames_output_path(target_path: str) -> str:
 def move_frames_to_output(target_path: str, fps: float = 0.0) -> None:
     """Move the extracted temp frames to a persistent sub-folder in the output directory.
 
-    When fps > 0 a meta.json sidecar is written inside the frames folder so the
-    Frame Editor tab can auto-populate FPS and image format without user input.
+    When fps > 0 a meta.json sidecar is written inside the frames folder recording
+    fps and image format alongside the saved frames.
     """
     temp_dir = get_temp_directory_path(target_path)
     frames_out_dir = get_frames_output_path(target_path)
@@ -252,7 +252,7 @@ def move_frames_to_output(target_path: str, fps: float = 0.0) -> None:
     if os.path.isdir(frames_out_dir):
         shutil.rmtree(frames_out_dir)
     shutil.move(temp_dir, frames_out_dir)
-    # Write metadata sidecar for the Frame Editor
+    # Write metadata sidecar
     if fps > 0:
         write_frames_metadata(
             frames_out_dir,
@@ -267,7 +267,7 @@ def move_frames_to_output(target_path: str, fps: float = 0.0) -> None:
 
 
 def write_frames_metadata(frames_dir: str, fps: float, source_name: str, image_format: str) -> None:
-    """Write a meta.json sidecar inside *frames_dir* for use by the Frame Editor."""
+    """Write a meta.json sidecar inside *frames_dir* recording fps, source, and image format."""
     meta = {
         "fps": fps,
         "source": os.path.basename(source_name),
@@ -281,18 +281,6 @@ def write_frames_metadata(frames_dir: str, fps: float, source_name: str, image_f
         print(f"write_frames_metadata: {exc}")
 
 
-def read_frames_metadata(frames_dir: str) -> dict:
-    """Read meta.json from *frames_dir*; return empty dict if absent or corrupt."""
-    meta_path = os.path.join(frames_dir, 'meta.json')
-    if os.path.isfile(meta_path):
-        try:
-            with open(meta_path, 'r') as fh:
-                return json.load(fh)
-        except Exception:
-            pass
-    return {}
-
-
 def get_frames_orig_path(target_path: str) -> str:
     """Return the directory where unswapped original frames are stored when keep_frames is enabled.
     Stored alongside the processed frames as <videoname>_frames_orig/ in the output directory."""
@@ -303,8 +291,8 @@ def get_frames_orig_path(target_path: str) -> str:
 def save_original_frames(target_path: str) -> None:
     """Copy the extracted temp frames to a _frames_orig/ folder BEFORE run_batch overwrites them.
 
-    Called from core.py when keep_frames is True, so the Frame Editor always has
-    access to the unswapped source frames for per-frame reprocessing.
+    Called from core.py when keep_frames is True, or when per-frame masks require
+    access to the unswapped source frames for reprocessing.
     """
     temp_dir = get_temp_directory_path(target_path)
     frames_orig_dir = get_frames_orig_path(target_path)
@@ -313,45 +301,6 @@ def save_original_frames(target_path: str) -> None:
     if os.path.isdir(frames_orig_dir):
         shutil.rmtree(frames_orig_dir)
     shutil.copytree(temp_dir, frames_orig_dir)
-
-
-def get_frame_mask_path(frames_orig_dir: str, frame_filename: str) -> str:
-    """Return the path for the per-frame mask JSON sidecar.
-
-    frame_filename is the basename of the frame image (e.g. '000001.png').
-    The sidecar is stored as '000001_mask.json' in the same _frames_orig/ directory.
-    """
-    base, _ = os.path.splitext(frame_filename)
-    return os.path.join(frames_orig_dir, f"{base}_mask.json")
-
-
-def save_frame_mask(frames_orig_dir: str, frame_filename: str, mask_data: dict) -> None:
-    """Persist per-frame mask settings to a JSON sidecar inside *frames_orig_dir*.
-
-    mask_data is a dict containing any combination of:
-      - slider keys: top, bottom, left, right, face_mask_blend,
-                     mouth_mask_blend, mouth_top, mouth_bottom,
-                     mouth_left, mouth_right (all floats)
-      - 'mask_json': the canvas mask JSON string from the mask editor
-    """
-    mask_path = get_frame_mask_path(frames_orig_dir, frame_filename)
-    try:
-        with open(mask_path, 'w') as fh:
-            json.dump(mask_data, fh)
-    except Exception as exc:
-        print(f"save_frame_mask: {exc}")
-
-
-def load_frame_mask(frames_orig_dir: str, frame_filename: str) -> dict:
-    """Load per-frame mask settings from the JSON sidecar; return {} if absent or corrupt."""
-    mask_path = get_frame_mask_path(frames_orig_dir, frame_filename)
-    if os.path.isfile(mask_path):
-        try:
-            with open(mask_path, 'r') as fh:
-                return json.load(fh)
-        except Exception:
-            pass
-    return {}
 
 
 def has_image_extension(image_path: str) -> bool:

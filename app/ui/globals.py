@@ -9,7 +9,6 @@ ui_upscale = None
 ui_blend_ratio = None
 ui_input_thumbs = []
 ui_target_thumbs = []
-ui_camera_frame = None
 
 # Saveable faceswap session component refs
 ui_selected_face_detection = None
@@ -21,7 +20,6 @@ ui_autorotate = None
 ui_skip_audio = None
 ui_keep_frames = None
 ui_wait_after_extraction = None
-ui_output_method = None
 ui_selected_mask_engine = None
 ui_clip_text = None
 ui_chk_showmaskoffsets = None

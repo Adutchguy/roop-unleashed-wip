@@ -161,6 +161,59 @@ EXPRESSION_PRESETS: dict[str, np.ndarray] = {
         _R_BROW_MID:      ( 0,  6),
         _L_BROW_MID:      ( 0,  6),
     }),
+
+    # ── Pain ────────────────────────────────────────────────────────────
+    # Grimace: brows drawn tightly together and down, mouth pulled back
+    # and taut with corners tucked down, upper lip retracts (teeth-gritted).
+    'Pain': _make_delta({
+        _R_BROW_INNER:    (12, 14),    # brows pulled together and down
+        _L_BROW_INNER:    (-12, 14),
+        _R_BROW_OUTER:    ( 0,  4),
+        _L_BROW_OUTER:    ( 0,  4),
+        _MOUTH_CORNER_L:  (-10,  6),   # corners pulled back/down — grimace
+        _MOUTH_CORNER_R:  ( 10,  6),
+        _UPPER_LIP_MID:   ( 0, -6),    # upper lip retracts, teeth show
+        _LOWER_LIP_MID:   ( 0,  8),
+        58:               ( 0,  4),
+        60:               ( 0,  4),
+    }),
+
+    # ── Terror ──────────────────────────────────────────────────────────
+    # Extreme fear: brows shoot up and pull together harder than Fear,
+    # jaw drops wide into a scream, inner lips open much further.
+    'Terror': _make_delta({
+        _R_BROW_INNER:    (14,-24),
+        _L_BROW_INNER:    (-14,-24),
+        _R_BROW_MID:      ( 4,-22),
+        _L_BROW_MID:      (-4,-22),
+        _R_BROW_OUTER:    ( 0,-14),
+        _L_BROW_OUTER:    ( 0,-14),
+        _CHIN:            ( 0, 34),    # jaw drops wide — scream
+        _MOUTH_CORNER_L:  (-10, 16),
+        _MOUTH_CORNER_R:  ( 10, 16),
+        58:               ( 0, 26),
+        59:               ( 0, 30),
+        60:               ( 0, 26),
+        _LOWER_LIP_MID:   ( 0, 28),
+        _UPPER_LIP_MID:   ( 0,-14),
+    }),
+
+    # ── Ecstasy ─────────────────────────────────────────────────────────
+    # Blissful joy: like Happy but more intense — mouth opens, brows lift.
+    'Ecstasy': _make_delta({
+        _MOUTH_CORNER_L:  (-6,-14),
+        _MOUTH_CORNER_R:  ( 6,-14),
+        _CHIN:            ( 0, 14),    # slight jaw drop — mouth open
+        58:               ( 0, 10),
+        59:               ( 0, 14),
+        60:               ( 0, 10),
+        _LOWER_LIP_MID:   ( 0, 12),
+        _UPPER_LIP_MID:   ( 0, -8),
+        _R_BROW_MID:      ( 0,-10),    # brows lift — blissful
+        _L_BROW_MID:      ( 0,-10),
+        _R_BROW_INNER:    ( 2, -8),
+        _L_BROW_INNER:    (-2, -8),
+    }),
 }
 
 

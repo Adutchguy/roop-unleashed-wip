@@ -51,7 +51,6 @@ class Settings:
         self.skip_audio = self.default_get(data, 'skip_audio', False)
         self.keep_frames = self.default_get(data, 'keep_frames', False)
         self.wait_after_extraction = self.default_get(data, 'wait_after_extraction', False)
-        self.output_method = self.default_get(data, 'output_method', 'File')
         self.mask_engine = self.default_get(data, 'mask_engine', 'DFL XSeg')
         self.mask_clip_text = self.default_get(data, 'mask_clip_text', 'cup,hands,hair,banana')
         self.show_mask_offsets = self.default_get(data, 'show_mask_offsets', False)
@@ -115,7 +114,6 @@ class Settings:
             'skip_audio': self.skip_audio,
             'keep_frames': self.keep_frames,
             'wait_after_extraction': self.wait_after_extraction,
-            'output_method': self.output_method,
             'mask_engine': self.mask_engine,
             'mask_clip_text': self.mask_clip_text,
             'show_mask_offsets': self.show_mask_offsets,

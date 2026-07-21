@@ -365,7 +365,7 @@ def _reprocess_custom_mask_frames(temp_frame_paths: list, orig_frame_paths: list
             print(f"[per-frame mask] frame {frame_num_1} reprocessed → {os.path.basename(out_path)}")
 
 
-def batch_process_regular(output_method, files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="",
+def batch_process_regular(files:list[ProcessEntry], masking_engine:str, new_clip_text:str, use_new_method, imagemask, restore_original_mouth, num_swap_steps, progress, selected_index = 0, use_3d_recon=False, mask_per_frame_json="",
                           use_source_bank=False, use_frontalization=False,
                           frontalization_threshold=25.0, swap_model='inswapper',
                           inner_mouth_blend=0.0, expression_strength=0.0,
@@ -410,7 +410,7 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
     roop.globals._batch_expression_strength  = expression_strength
     roop.globals._batch_expression_preset    = expression_preset
 
-    batch_process(output_method, files, use_new_method)
+    batch_process(files, use_new_method)
     return
 
 def batch_process_with_options(files:list[ProcessEntry], options, progress):
@@ -428,7 +428,7 @@ def batch_process_with_options(files:list[ProcessEntry], options, progress):
 
 
 
-def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> None:
+def batch_process(files:list[ProcessEntry], use_new_method) -> None:
     global clip_text, process_mgr
 
     roop.globals.processing = True
@@ -481,13 +481,11 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             if v.endframe == 0:
                 v.endframe = get_video_frame_total(v.filename)
 
-            is_streaming_only = output_method == "Virtual Camera"
-            if is_streaming_only == False:
-                update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
+            update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
 
             start_processing = time()
             _has_per_frame_masks = bool(getattr(roop.globals, 'mask_per_frame', {}))
-            if (is_streaming_only == False and roop.globals.keep_frames) or not use_new_method or (is_streaming_only == False and _has_per_frame_masks):
+            if roop.globals.keep_frames or not use_new_method or _has_per_frame_masks:
                 util.create_temp(v.filename)
                 update_status('Extracting frames...')
                 extraction_ok = ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
@@ -558,7 +556,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     skip_audio = True
                 else:
                     skip_audio = roop.globals.skip_audio
-                process_mgr.run_batch_inmem(output_method, v.filename, v.finalname, v.startframe, v.endframe, fps,roop.globals.execution_threads, skip_audio)
+                process_mgr.run_batch_inmem(v.filename, v.finalname, v.startframe, v.endframe, fps,roop.globals.execution_threads, skip_audio)
                 
             if not roop.globals.processing:
                 end_processing('Processing stopped!')
@@ -599,7 +597,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                     else:
                         shutil.move(video_file_name, destination)
 
-            elif is_streaming_only == False:
+            else:
                 update_status(f'Failed processing {os.path.basename(v.finalname)}!')
             elapsed_time = time() - start_processing
             average_fps = (v.endframe - v.startframe) / elapsed_time

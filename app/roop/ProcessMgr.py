@@ -26,7 +26,6 @@ from queue import Queue
 _gpu_lock = Lock()
 from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
-from roop.StreamWriter import StreamWriter
 import roop.globals
 
 
@@ -166,15 +165,12 @@ class ProcessMgr():
         self.frames_queue = None
         self.processed_queue = None
         self.videowriter = None
-        self.streamwriter = None
         self.progress_gradio = None
         self.total_frames = 0
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
         self.last_found_bboxes = None  # np.ndarray of shape (N, 4) — last detected face bboxes
         self.expression_driving_data = None  # cached output of ExpressionReenactor.prepare_preset()
-        self.output_to_file = None
-        self.output_to_cam = None
         self.skipped_frame_indices = []  # 0-based indices of frames dropped by SKIP_FRAME action
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
@@ -516,10 +512,7 @@ class ProcessMgr():
             frame_idx = nextindex          # 0-based index of this frame in the output
             nextindex += 1
             if frame is not None:
-                if self.output_to_file:
-                    self.videowriter.write_frame(frame)
-                if self.output_to_cam:
-                    self.streamwriter.WriteToStream(frame)
+                self.videowriter.write_frame(frame)
                 del frame
             elif process == False:
                 num_producers -= 1
@@ -530,7 +523,7 @@ class ProcessMgr():
                 self.skipped_frame_indices.append(frame_idx)
 
 
-    def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
+    def run_batch_inmem(self, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
         # Animated WebP: OpenCV cannot decode it — use PIL-based reader instead
         is_awebp = source_video.lower().endswith('.webp')
         cap = None
@@ -570,13 +563,7 @@ class ProcessMgr():
             self.frames_queue.append(Queue(1))
             self.processed_queue.append(Queue(1))
 
-        self.output_to_file = output_method != "Virtual Camera"
-        self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
-
-        if self.output_to_file:
-            self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
-        if self.output_to_cam:
-            self.streamwriter = StreamWriter((width, height), int(fps))
+        self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
 
         if is_awebp:
             readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
@@ -601,12 +588,8 @@ class ProcessMgr():
         writethread.join()
         if cap is not None:
             cap.release()
-        if self.output_to_file:
-            self.videowriter.close()
-            self.videowriter = None  # FIX: null out so GC can collect
-        if self.output_to_cam:
-            self.streamwriter.Close()
-            self.streamwriter = None  # FIX: null out so GC can collect
+        self.videowriter.close()
+        self.videowriter = None  # FIX: null out so GC can collect
 
         self.frames_queue.clear()
         self.processed_queue.clear()
@@ -1534,9 +1517,6 @@ class ProcessMgr():
         if self.videowriter is not None:
             self.videowriter.close()
             self.videowriter = None
-        if self.streamwriter is not None:
-            self.streamwriter.Close()
-            self.streamwriter = None
         # FIX: Clear face data and cached frame references so nothing holds VRAM-backed data
         self.input_face_datas = []
         self.target_face_datas = []

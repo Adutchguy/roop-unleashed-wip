@@ -85,7 +85,7 @@ def faceswap_tab():
                         )
                         dd_expression_preset = gr.Dropdown(
                             label="😄 Expression Preset",
-                            choices=["None", "Happy", "Sad", "Angry", "Surprised", "Fear", "Disgusted"],
+                            choices=["None", "Happy", "Sad", "Angry", "Surprised", "Fear", "Disgusted", "Pain", "Terror", "Ecstasy"],
                             value=roop.globals.CFG.expression_preset,
                             interactive=True,
                             info="Apply a built-in expression warp.",
@@ -261,21 +261,21 @@ def faceswap_tab():
                     text_frame_clip = gr.Markdown('Processing frame range [0 - 0]')
                     set_frame_start = gr.Button("⬅ Set as Start", size='sm')
                     set_frame_end = gr.Button("➡ Set as End", size='sm')
-        with gr.Row(variant='panel'):
-            with gr.Column(scale=1):
-                selected_face_detection = gr.Dropdown(swap_choices, value=roop.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
-            with gr.Column(scale=1):
-                num_swap_steps = gr.Slider(1, 5, value=roop.globals.CFG.num_swap_steps, step=1.0, label="Number of swapping steps", info="More steps may increase likeness")
-            with gr.Column(scale=2):
-                ui.globals.ui_selected_enhancer = gr.Dropdown(["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"], value=roop.globals.CFG.selected_enhancer, label="Select post-processing")
+                with gr.Row(variant='panel'):
+                    with gr.Column(scale=1):
+                        selected_face_detection = gr.Dropdown(swap_choices, value=roop.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
+                    with gr.Column(scale=1):
+                        num_swap_steps = gr.Slider(1, 5, value=roop.globals.CFG.num_swap_steps, step=1.0, label="Number of swapping steps", info="More steps may increase likeness")
+                    with gr.Column(scale=2):
+                        ui.globals.ui_selected_enhancer = gr.Dropdown(["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"], value=roop.globals.CFG.selected_enhancer, label="Select post-processing")
 
-        with gr.Row(variant='panel'):
-            with gr.Column(scale=1):
-                max_face_distance = gr.Slider(0.01, 1.0, value=roop.globals.CFG.max_face_distance, label="Max Face Similarity Threshold", info="0.0 = identical 1.0 = no similarity", elem_id='max_face_distance', interactive=True)
-            with gr.Column(scale=1):
-                ui.globals.ui_upscale = gr.Dropdown(["128px", "256px", "512px"], value=roop.globals.CFG.subsample_upscale, label="Subsample upscale to", interactive=True)
-            with gr.Column(scale=2):
-                ui.globals.ui_blend_ratio = gr.Slider(0.0, 1.0, value=roop.globals.CFG.blend_ratio, label="Original/Enhanced image blend ratio", info="Only used with active post-processing")
+                with gr.Row(variant='panel'):
+                    with gr.Column(scale=1):
+                        max_face_distance = gr.Slider(0.01, 1.0, value=roop.globals.CFG.max_face_distance, label="Max Face Similarity Threshold", info="0.0 = identical 1.0 = no similarity", elem_id='max_face_distance', interactive=True)
+                    with gr.Column(scale=1):
+                        ui.globals.ui_upscale = gr.Dropdown(["128px", "256px", "512px"], value=roop.globals.CFG.subsample_upscale, label="Subsample upscale to", interactive=True)
+                    with gr.Column(scale=2):
+                        ui.globals.ui_blend_ratio = gr.Slider(0.0, 1.0, value=roop.globals.CFG.blend_ratio, label="Original/Enhanced image blend ratio", info="Only used with active post-processing")
 
         with gr.Row(variant='panel'):
             with gr.Column(scale=1):
@@ -294,8 +294,6 @@ def faceswap_tab():
             with gr.Column():
                 bt_stop = gr.Button("⏹ Stop", variant='secondary', interactive=False)
                 gr.Button("👀 Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.globals.output_path))
-            with gr.Column(scale=2):
-                output_method = gr.Dropdown(["File","Virtual Camera", "Both"], value=roop.globals.CFG.output_method, label="Select Output Method", interactive=True)
 
         # No gr.HTML modal component needed — the masking modal is created entirely by
         # JavaScript injected via Blocks(head=MASKING_HEAD_JS) in main.py.
@@ -311,7 +309,6 @@ def faceswap_tab():
     ui.globals.ui_skip_audio = roop.globals.skip_audio
     ui.globals.ui_keep_frames = roop.globals.keep_frames
     ui.globals.ui_wait_after_extraction = roop.globals.wait_after_extraction
-    ui.globals.ui_output_method = output_method
     ui.globals.ui_selected_mask_engine = selected_mask_engine
     ui.globals.ui_clip_text = clip_text
     ui.globals.ui_chk_showmaskoffsets = chk_showmaskoffsets
@@ -380,7 +377,7 @@ def faceswap_tab():
 
 
     start_event = bt_start.click(fn=start_swap,
-        inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
+        inputs=[ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, video_swapping_method, no_face_action, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, mask_json_store,
                     chk_use_3d_recon, mask_per_frame_store,
                     chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model,
@@ -1230,8 +1227,11 @@ MASKING_HEAD_JS = """
         '<button id="mask-btn-erase"   style="background:#1c1c1c;border:2px solid #383838;color:#999;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">&#x2B1C; Erase</button>',
         '<div style="width:1px;background:#383838;height:28px;margin:0 4px;"></div>',
         '<span style="color:#999;font-size:12px;">Brush:</span>',
-        '<input type="range" id="mask-brush-sz" min="5" max="150" value="20" style="width:100px;accent-color:#50a070;cursor:pointer;vertical-align:middle;">',
-        '<span id="mask-brush-lbl" style="color:#eee;font-size:12px;min-width:32px;">20px</span>',
+        '<button id="mask-btn-brush-dec" title="Decrease brush size" style="background:#242424;border:1px solid #444;color:#ccc;padding:3px 9px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.2;">&#x2212;</button>',
+        '<input type="range" id="mask-brush-sz" min="1" max="150" value="20" style="width:90px;accent-color:#50a070;cursor:pointer;vertical-align:middle;">',
+        '<button id="mask-btn-brush-inc" title="Increase brush size" style="background:#242424;border:1px solid #444;color:#ccc;padding:3px 9px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.2;">+</button>',
+        '<input type="number" id="mask-brush-num" min="1" max="150" step="1" value="20" title="Brush size (px)" style="width:48px;background:#2c2c2c;border:1px solid #383838;color:#eee;border-radius:5px;padding:3px 4px;font-size:12px;text-align:center;">',
+        '<span style="color:#888;font-size:11px;">px</span>',
         '<div style="width:1px;background:#383838;height:28px;margin:0 4px;"></div>',
         '<button id="mask-btn-zoom-out" title="Zoom out" style="background:#242424;border:1px solid #444;color:#ccc;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:16px;font-weight:700;line-height:1.2;">&#x2212;</button>',
         '<span id="mask-zoom-lbl" style="color:#eee;font-size:12px;min-width:40px;text-align:center;">100%</span>',
@@ -1445,6 +1445,10 @@ MASKING_HEAD_JS = """
     document.getElementById('mask-btn-apply').addEventListener('click',   function() { maskApply(); });
     document.getElementById('mask-btn-discard').addEventListener('click', function() { _closeModal(false); });
     document.getElementById('mask-brush-sz').addEventListener('input',    function() { _setBrush(this.value); });
+    document.getElementById('mask-brush-num').addEventListener('input',  function() { _setBrush(this.value); });
+    document.getElementById('mask-brush-num').addEventListener('change', function() { _setBrush(this.value); });
+    document.getElementById('mask-btn-brush-dec').addEventListener('click', function() { _setBrush(_brush - 1); });
+    document.getElementById('mask-btn-brush-inc').addEventListener('click', function() { _setBrush(_brush + 1); });
     document.getElementById('mask-btn-zoom-in').addEventListener('click',  function() { _zoomBy(1.25); });
     document.getElementById('mask-btn-zoom-out').addEventListener('click', function() { _zoomBy(0.8); });
     document.getElementById('mask-btn-zoom-rst').addEventListener('click', function() { _resetZoom(); });
@@ -1678,9 +1682,14 @@ MASKING_HEAD_JS = """
   }
 
   function _setBrush(v) {
-    _brush = parseInt(v);
-    var lbl = document.getElementById('mask-brush-lbl');
-    if (lbl) lbl.textContent = v + 'px';
+    var n = parseInt(v, 10);
+    if (isNaN(n)) n = _brush;
+    n = Math.max(1, Math.min(150, n));
+    _brush = n;
+    var rng = document.getElementById('mask-brush-sz');
+    var num = document.getElementById('mask-brush-num');
+    if (rng && Number(rng.value) !== n) rng.value = n;
+    if (num && Number(num.value) !== n) num.value = n;
   }
 
   function _drawCursor(x, y) {
@@ -2316,7 +2325,7 @@ def translate_swap_mode(dropdown_text):
     return "all"
 
 
-def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
+def start_swap( enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
                 selected_mask_engine, clip_text, processing_method, no_face_action, autorotate, restore_original_mouth, num_swap_steps, upsample, mask_json,
                 use_3d_recon=False, mask_per_frame_json="",
                 use_source_bank=False, use_frontalization=False,
@@ -2364,7 +2373,7 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.globals.video_quality = roop.globals.CFG.video_quality
     roop.globals.max_memory = roop.globals.CFG.memory_limit if roop.globals.CFG.memory_limit > 0 else None
 
-    batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
+    batch_process_regular(list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
                           use_3d_recon=use_3d_recon,
                           mask_per_frame_json=mask_per_frame_json or "",
                           use_source_bank=use_source_bank,

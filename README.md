@@ -136,6 +136,17 @@ Additional enhancement models (GFPGAN, GPEN, CodeFormer, etc.) can be downloaded
 
 ---
 
+## Interface Tabs
+
+| Tab | Purpose |
+|---|---|
+| 🔄 Face Swap | Main swap workflow — source/target upload, swap mode, masking, mouth/expression controls, and processing options. |
+| 👨‍👩‍👧‍👦 Face Management | Build and manage `.fsz` facesets — cut faces from video frames and organize the faces in a set. |
+| ✏️ Editor | Quick media prep before swapping: resize, rotate/flip, change FPS, and crop, with a one-click **Send to Face Swap** to hand the result straight to the main tab. |
+| ⚙️ Settings | Persistent configuration — provider, output formats, thresholds, and model downloads. |
+
+---
+
 ## Features
 
 ### Face Swap Modes
@@ -191,15 +202,13 @@ Applied after the swap to sharpen and restore quality, especially around the eye
 
 ### Expression Warp
 
-Upload an **Expression Reference** image (any photo showing a face with the desired expression — happy, sad, neutral, surprised, etc.) and set the **Expression Warp Strength** slider to warp the swapped face toward that expression.
+Pick a built-in **Expression Preset** (None, Happy, Sad, Angry, Surprised, Fear, Disgusted, Pain, Terror, Ecstasy) and set the **Expression Warp Strength** slider to warp the swapped face toward that expression. No reference image upload is needed — the presets are built in.
 
 The warp uses the insightface 106-point 2D landmarks already present in the pipeline — no additional model downloads required. A Thin Plate Spline (TPS) interpolation shifts expression-relevant landmarks (mouth, eyebrows, eye openings) while anchoring the face boundary so the face shape does not drift.
 
 - **Strength 0** — no effect (default)
 - **Strength 0.5** — partial expression blend
-- **Strength 1.0** — full warp toward the reference expression
-
-The expression reference is processed once per batch, so there is no per-frame overhead beyond the warp itself.
+- **Strength 1.0** — full warp toward the preset expression
 
 ### 3D Pose Features (Experimental)
 
@@ -217,14 +226,23 @@ Internally upscales the aligned face before the swap model runs, then downsample
 | 256 px | 256 × 256 | Good balance (default) |
 | 512 px | 512 × 512 | Highest quality, slower |
 
+### Media Editor (✏️ Editor tab)
+
+A lightweight pre-processing tool for getting source/target media into shape before swapping:
+
+- **Resize** — Snap to common resolutions (1280×720, 1920×1080, 854×480, 3840×2160).
+- **Rotate / Flip** — 90° clockwise/counter-clockwise, 180°, or horizontal/vertical flip.
+- **Change FPS** — Retarget video frame rate (video files only).
+- **Crop** — Trim from each edge as a percentage of frame size.
+- **Send to Face Swap** — One click sends the edited output straight into the Face Swap tab's target list.
+
 ### Other Options
 
-- **VR mode** — Processes side-by-side VR video frames.
 - **Auto-rotate faces** — Detects and corrects sideways faces before swapping.
 - **Skip audio** — Strip audio from video output.
-- **Keep frames** — Retain extracted frames after video assembly.
-- **Output method** — File (default), Virtual Camera, or Both.
-- **Video swapping method** — In-Memory processing (fast, higher RAM) or Extract Frames (safer for large videos).
+- **Keep frames** — Retain extracted frames after video assembly (only relevant when frames are extracted to disk).
+- **Wait for user key press before creating video** — Pause after frame extraction so frames can be inspected/edited before the final video is assembled.
+- **Video swapping method** — In-Memory processing (fast, higher RAM) or Extract Frames to media (safer for large videos).
 
 ---
 
@@ -289,12 +307,13 @@ roop-unleashed-wip/
 │   ├── roop/               # Core processing
 │   │   ├── ProcessMgr.py       # Main frame-processing pipeline
 │   │   ├── ProcessOptions.py   # Per-run configuration
-│   │   ├── expression_reenact.py  # TPS expression warp module
+│   │   ├── expression_reenact.py  # Preset-driven TPS expression warp module
 │   │   ├── face_3d_recon.py    # Pose estimation and source crop warping
-│   │   ├── face_frontalize.py  # Target frontalization
+│   │   ├── face_frontalize.py  # Target frontalization (present in code, not yet exposed in UI)
 │   │   ├── face_util.py        # Face detection / alignment helpers
 │   │   └── processors/         # Swap, mask, and enhance processor plugins
 │   ├── ui/                 # Gradio web UI
+│   │   └── tabs/               # Face Swap, Face Management, Editor, Settings tabs
 │   ├── models/             # Downloaded model weights (gitignored)
 │   ├── requirements.txt    # Python dependencies
 │   └── run.py              # Entry point

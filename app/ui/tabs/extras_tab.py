@@ -24,7 +24,7 @@ ROTATE_FILTERS = {
 
 def extras_tab(bt_destfiles=None):
     # State: tracks detected properties of the current file
-    file_info = gr.State({"width": 0, "height": 0, "fps": 24.0, "is_video": False})
+    file_info = gr.State({"width": 0, "height": 0, "fps": 24.0, "duration": 0.0, "is_video": False})
 
     with gr.Tab("✏️ Editor"):
 
@@ -67,6 +67,14 @@ def extras_tab(bt_destfiles=None):
                 current_fps_label = gr.Markdown("**Current:** —")
                 fps_value = gr.Slider(1, 120, value=30, step=1,
                                       label="Target FPS", show_label=False)
+
+        # ── Trim ──────────────────────────────────────────────────────
+        with gr.Group(visible=False) as trim_group:
+            gr.Markdown("#### Trim  *(cut to a start/end time, in seconds)*")
+            current_duration_label = gr.Markdown("**Current:** —")
+            with gr.Row():
+                trim_start = gr.Slider(0, 1, value=0, step=0.1, label="Start (s)")
+                trim_end   = gr.Slider(0, 1, value=1, step=0.1, label="End (s)")
 
         # ── Crop ──────────────────────────────────────────────────────
         with gr.Group():
@@ -119,6 +127,8 @@ def extras_tab(bt_destfiles=None):
             current_res_label, resize_resolution,
             current_fps_label, fps_value,
             fps_group,
+            current_duration_label, trim_start, trim_end,
+            trim_group,
             file_info,
         ],
         show_progress="hidden",
@@ -130,6 +140,7 @@ def extras_tab(bt_destfiles=None):
             files_to_process,
             resize_resolution, rotation_choice,
             fps_value,
+            trim_start, trim_end,
             crop_left, crop_right, crop_top, crop_bottom,
             file_info,
         ],
@@ -160,7 +171,11 @@ def on_file_upload(files):
         gr.update(value="**Current:** —"),
         gr.update(value=30),
         gr.update(visible=False),
-        {"width": 0, "height": 0, "fps": 24.0, "is_video": False},
+        gr.update(value="**Current:** —"),
+        gr.update(minimum=0, maximum=1, value=0),
+        gr.update(minimum=0, maximum=1, value=1),
+        gr.update(visible=False),
+        {"width": 0, "height": 0, "fps": 24.0, "duration": 0.0, "is_video": False},
     )
     if not files:
         return empty
@@ -184,11 +199,18 @@ def on_file_upload(files):
     else:
         fps = 24.0
 
+    # Trim only applies to real (non-animated) video files for now.
+    is_trimmable = is_vid and not is_animated
+    duration = util.detect_duration(path) if is_trimmable else 0.0
+
     # Build resolution dropdown choices with current res at top
     current_res = f"{w}x{h}" if w and h else RESOLUTION_CHOICES[0]
     choices = [current_res] + [r for r in RESOLUTION_CHOICES if r != current_res]
 
-    info = {"width": w, "height": h, "fps": fps, "is_video": is_vid, "is_animated_gif": is_agif, "is_animated_webp": is_awebp}
+    info = {
+        "width": w, "height": h, "fps": fps, "duration": duration,
+        "is_video": is_vid, "is_animated_gif": is_agif, "is_animated_webp": is_awebp,
+    }
 
     # Animated webp/gif previews in the image component (browsers render them natively)
     show_as_img = is_img or is_animated
@@ -201,11 +223,16 @@ def on_file_upload(files):
         gr.update(value=f"**Current:** {fps:.2f} fps"),
         gr.update(value=round(fps)),
         gr.update(visible=is_vid),
+        gr.update(value=f"**Current:** {duration:.2f}s" if is_trimmable else "**Current:** —"),
+        gr.update(minimum=0, maximum=max(duration, 0.1), value=0, step=0.1),
+        gr.update(minimum=0, maximum=max(duration, 0.1), value=duration, step=0.1),
+        gr.update(visible=is_trimmable),
         info,
     )
 
 
 def on_apply_all(files, resolution, rotation, fps,
+                 trim_start, trim_end,
                  crop_left, crop_right, crop_top, crop_bottom,
                  file_info):
     no_output = (
@@ -225,9 +252,21 @@ def on_apply_all(files, resolution, rotation, fps,
     cur_w  = file_info.get("width", 0)
     cur_h  = file_info.get("height", 0)
     cur_fps = file_info.get("fps", 24.0)
-    print(f"[Editor] paths={paths}, is_vid={is_vid}, is_agif={is_agif}, cur_w={cur_w}, cur_h={cur_h}, cur_fps={cur_fps}")
+    cur_duration = file_info.get("duration", 0.0)
+    print(f"[Editor] paths={paths}, is_vid={is_vid}, is_agif={is_agif}, cur_w={cur_w}, cur_h={cur_h}, cur_fps={cur_fps}, cur_duration={cur_duration}")
+
+    # Trim only applies to real (non-animated) video — active whenever the
+    # requested window is narrower than the detected duration.
+    is_trimmable = is_vid and not is_agif and not is_awebp
+    trim_active = (
+        is_trimmable
+        and trim_end is not None
+        and trim_end > trim_start
+        and (trim_start > 0.01 or trim_end < cur_duration - 0.01)
+    )
 
     # Build vf filter list (order: crop → rotate → scale → fps)
+    # Trim itself is applied separately (via -ss/-t, not -vf) — see below.
     # Note: for animated GIF, fps filter is embedded inside apply_media_transforms_gif
     filters = []
 
@@ -252,8 +291,8 @@ def on_apply_all(files, resolution, rotation, fps,
     if is_vid and not is_agif and abs(fps - cur_fps) > 0.1:
         filters.append(f"fps={fps}")
 
-    print(f"[Editor] filters built: {filters}")
-    if not filters and not (is_agif and abs(fps - cur_fps) > 0.1):
+    print(f"[Editor] filters built: {filters}, trim_active={trim_active} ({trim_start}s → {trim_end}s)")
+    if not filters and not trim_active and not (is_agif and abs(fps - cur_fps) > 0.1):
         gr.Info("No changes to apply.")
         return no_output
 
@@ -280,7 +319,11 @@ def on_apply_all(files, resolution, rotation, fps,
             target_fps = fps if abs(fps - cur_fps) > 0.1 else None
             success = ffmpeg.apply_media_transforms_gif(f, dest, filters, target_fps)
         else:
-            success = ffmpeg.apply_media_transforms(f, dest, filters, is_vid)
+            success = ffmpeg.apply_media_transforms(
+                f, dest, filters, is_vid,
+                trim_start=trim_start if trim_active else 0.0,
+                trim_end=trim_end if trim_active else None,
+            )
         if success:
             out.append(dest)
         else:

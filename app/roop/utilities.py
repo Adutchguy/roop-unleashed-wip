@@ -67,6 +67,37 @@ def detect_fps(target_path: str) -> float:
     return fps
 
 
+def detect_duration(target_path: str) -> float:
+    """Returns duration in seconds for videos and animated images. Returns 0.0 on failure."""
+    if not target_path:
+        return 0.0
+    # Animated WebP: OpenCV can't read webp at all — derive from per-frame durations,
+    # same fallback approach used by detect_fps.
+    if target_path.lower().endswith('.webp') and is_animated_webp(target_path):
+        try:
+            from PIL import Image
+            with Image.open(target_path) as img:
+                n = getattr(img, 'n_frames', 1)
+                total_ms = 0
+                for i in range(n):
+                    img.seek(i)
+                    d = img.info.get('duration', None)
+                    total_ms += d if d and d > 0 else 100
+                return total_ms / 1000.0
+        except Exception as exc:
+            print(f"[detect_duration] WebP duration read failed: {exc}")
+        return 0.0
+    cap = cv2.VideoCapture(target_path)
+    duration = 0.0
+    if cap.isOpened():
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if fps and fps > 0 and frame_count and frame_count > 0:
+            duration = frame_count / fps
+    cap.release()
+    return duration
+
+
 def detect_dimensions(target_path: str):
     """Returns (width, height) for images and videos. Returns (0, 0) on failure."""
     if is_image(target_path):

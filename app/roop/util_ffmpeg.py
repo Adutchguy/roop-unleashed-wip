@@ -375,6 +375,61 @@ def create_gif_from_frames_dir(frames_dir: str, output_path: str, fps: float,
     ])
 
 
+def restore_audio_dropping_frames(
+        intermediate_video: str, original_video: str,
+        skipped_frame_indices: list, fps: float,
+        trim_frame_start, trim_frame_end, final_video: str) -> bool:
+    """Like restore_audio(), but removes audio segments matching skipped video frames.
+
+    When SKIP_FRAME drops frames from the video, the corresponding audio windows
+    are cut out so the shorter video and its audio track stay in sync.
+
+    skipped_frame_indices — 0-based frame indices (relative to trim_frame_start)
+                            that were dropped from the output video.
+    fps                   — frames per second of the source video.
+    """
+    if not skipped_frame_indices:
+        return restore_audio(intermediate_video, original_video,
+                             trim_frame_start, trim_frame_end, final_video)
+
+    offset  = int(trim_frame_start) if trim_frame_start else 0
+    t_start = offset / fps
+    t_end   = (int(trim_frame_end) / fps) if trim_frame_end else None
+
+    # Step 1: atrim extracts the right segment from the original audio and
+    #         resets its timestamps to 0 so frame-index arithmetic works cleanly.
+    atrim_args = f'start={t_start:.6f}'
+    if t_end is not None:
+        atrim_args += f':end={t_end:.6f}'
+    atrim_chain = f'atrim={atrim_args},asetpts=PTS-STARTPTS'
+
+    # Step 2: aselect drops the audio windows that correspond to skipped frames
+    #         (after timestamp reset, n/fps is the start of frame n).
+    skip_parts = '+'.join(
+        f'between(t,{n / fps:.6f},{(n + 1) / fps:.6f})'
+        for n in sorted(skipped_frame_indices)
+    )
+    aselect_chain = f"aselect='not({skip_parts})',asetpts=N/SR/TB"
+
+    filter_complex = (
+        f'[1:a]{atrim_chain}[_atrimmed];'
+        f'[_atrimmed]{aselect_chain}[aout]'
+    )
+
+    commands = [
+        '-i', intermediate_video,
+        '-i', original_video,
+        '-filter_complex', filter_complex,
+        '-map', '0:v:0',
+        '-map', '[aout]',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
+        final_video,
+    ]
+    return run_ffmpeg(commands)
+
+
 def restore_audio(intermediate_video: str, original_video: str, trim_frame_start, trim_frame_end, final_video: str) -> bool:
     """Mux audio from *original_video* into *intermediate_video*, writing *final_video*.
 

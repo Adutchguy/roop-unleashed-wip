@@ -26,7 +26,6 @@ from queue import Queue
 _gpu_lock = Lock()
 from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
-from roop.StreamWriter import StreamWriter
 import roop.globals
 
 
@@ -166,14 +165,13 @@ class ProcessMgr():
         self.frames_queue = None
         self.processed_queue = None
         self.videowriter = None
-        self.streamwriter = None
         self.progress_gradio = None
         self.total_frames = 0
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
         self.last_found_bboxes = None  # np.ndarray of shape (N, 4) — last detected face bboxes
-        self.output_to_file = None
-        self.output_to_cam = None
+        self.expression_driving_data = None  # cached output of ExpressionReenactor.prepare_preset()
+        self.skipped_frame_indices = []  # 0-based indices of frames dropped by SKIP_FRAME action
         # Per-faceset canvas masks: {faceset_idx (int): {'exclude_mask': arr, 'include_mask': arr,
         #                                                  'ref_kps': arr, 'is_canonical': bool}}
         self.face_masks = {}
@@ -194,6 +192,8 @@ class ProcessMgr():
         self.num_frames_no_face = 0
         self.last_swapped_frame = None
         self.last_found_bboxes = None
+        self.expression_driving_data = None
+        self.skipped_frame_indices = []
         self.options = options
         devicename = get_device()
 
@@ -321,6 +321,21 @@ class ProcessMgr():
             except Exception as e:
                 print(f"[ProcessMgr] Pose-aware source cache failed: {e}")
 
+        # ── Expression warp: pre-process driving data (preset) ───────────────
+        # Runs once per batch/preview so face detection is not repeated per frame.
+        self.expression_driving_data = None
+        expr_str    = getattr(options, 'expression_strength', 0.0)
+        expr_preset = getattr(options, 'expression_preset', None)
+        if expr_str > 0.0 and expr_preset and expr_preset != 'None':
+            try:
+                from roop.expression_reenact import ExpressionReenactor
+                reenactor = ExpressionReenactor.instance()
+                self.expression_driving_data = reenactor.prepare_preset(expr_preset)
+                if self.expression_driving_data is None:
+                    print(f"[ProcessMgr] Expression preset '{expr_preset}' not found — warp disabled.")
+            except Exception as e:
+                print(f"[ProcessMgr] Expression driving prep failed: {e}")
+
         # ── Multi-angle source bank: precompute per-face poses ────────────────
         # For each face in every FaceSet, estimate its head yaw/pitch from
         # landmark_3d_68 so process_face() can select the closest-angle source.
@@ -370,6 +385,20 @@ class ProcessMgr():
                 for future in as_completed(futures):
                     future.result()
 
+        # If any frames were skipped, renumber the remaining files sequentially
+        # so ffmpeg's %06d frame reader sees no gaps when building the video.
+        if self.skipped_frame_indices and target_files:
+            import glob as _glob
+            frames_dir = os.path.dirname(target_files[0])
+            image_format = roop.globals.CFG.output_image_format
+            existing = sorted(_glob.glob(os.path.join(frames_dir, f'*.{image_format}')))
+            for new_idx, old_path in enumerate(existing, start=1):
+                new_path = os.path.join(frames_dir, f'{new_idx:06d}.{image_format}')
+                if old_path != new_path:
+                    os.rename(old_path, new_path)
+            print(f"[ProcessMgr] Renumbered {len(existing)} frames "
+                  f"({len(self.skipped_frame_indices)} skipped)")
+
 
     def process_frames(self, source_files: List[str], target_files: List[str], current_files, update: Callable[[], None]) -> None:
         for f in current_files:
@@ -402,7 +431,13 @@ class ProcessMgr():
                         resimg = temp_frame   # fall back to unmodified frame
                     else:
                         raise   # non-GPU errors propagate normally
-                if resimg is not None:
+                if resimg is None:
+                    # Frame skipped (SKIP_FRAME action) — record index so audio
+                    # can be trimmed to match the shorter output video.
+                    i = source_files.index(f)
+                    with self.lock:
+                        self.skipped_frame_indices.append(i)
+                else:
                     i = source_files.index(f)
                     cv2.imwrite(target_files[i], resimg)
             if update:
@@ -471,23 +506,24 @@ class ProcessMgr():
     def write_frames_thread(self):
         nextindex = 0
         num_producers = self.num_threads
-        
+
         while True:
             process, frame = self.processed_queue[nextindex % self.num_threads].get()
+            frame_idx = nextindex          # 0-based index of this frame in the output
             nextindex += 1
             if frame is not None:
-                if self.output_to_file:
-                    self.videowriter.write_frame(frame)
-                if self.output_to_cam:
-                    self.streamwriter.WriteToStream(frame)
+                self.videowriter.write_frame(frame)
                 del frame
             elif process == False:
                 num_producers -= 1
                 if num_producers < 1:
                     return
+            else:
+                # process=True, frame=None → SKIP_FRAME dropped this frame
+                self.skipped_frame_indices.append(frame_idx)
 
 
-    def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
+    def run_batch_inmem(self, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
         # Animated WebP: OpenCV cannot decode it — use PIL-based reader instead
         is_awebp = source_video.lower().endswith('.webp')
         cap = None
@@ -527,13 +563,7 @@ class ProcessMgr():
             self.frames_queue.append(Queue(1))
             self.processed_queue.append(Queue(1))
 
-        self.output_to_file = output_method != "Virtual Camera"
-        self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
-
-        if self.output_to_file:
-            self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
-        if self.output_to_cam:
-            self.streamwriter = StreamWriter((width, height), int(fps))
+        self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
 
         if is_awebp:
             readthread = Thread(target=self.read_frames_webp_thread, args=(awebp_frames, frame_start, frame_end, threads))
@@ -558,12 +588,8 @@ class ProcessMgr():
         writethread.join()
         if cap is not None:
             cap.release()
-        if self.output_to_file:
-            self.videowriter.close()
-            self.videowriter = None  # FIX: null out so GC can collect
-        if self.output_to_cam:
-            self.streamwriter.Close()
-            self.streamwriter = None  # FIX: null out so GC can collect
+        self.videowriter.close()
+        self.videowriter = None  # FIX: null out so GC can collect
 
         self.frames_queue.clear()
         self.processed_queue.clear()
@@ -679,7 +705,7 @@ class ProcessMgr():
                                 else:
                                     temp_frame = self.process_face(i, face, temp_frame)
                                 num_faces_found += 1
-                            if not roop.globals.vr_mode and num_faces_found == num_targetfaces:
+                            if num_faces_found == num_targetfaces:
                                 break
 
             elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
@@ -693,9 +719,6 @@ class ProcessMgr():
                 del face
             faces.clear()
 
-        if roop.globals.vr_mode and num_faces_found % 2 > 0:
-            num_faces_found = 0
-            return num_faces_found, frame
         if num_faces_found == 0:
             return num_faces_found, frame
 
@@ -1073,6 +1096,38 @@ class ProcessMgr():
                                               orig_enh.astype(np.float32) * c3e).astype(np.uint8)
                 except Exception as e:
                     print(f"[ProcessMgr] Warp-based mask application failed: {e}")
+
+        # ── Expression warp (post-swap, pre-paste) ───────────────────────────
+        # Warps the swapped face crop toward the user-supplied expression
+        # reference using a TPS displacement field built from 106-pt landmarks.
+        # Applied in crop space (at subsample_size) so the enhancer's
+        # upscaled details are preserved; the remap uses REFLECT_101 to avoid
+        # black borders at the crop edges.
+        _estr = getattr(self.options, 'expression_strength', 0.0)
+        if (_estr > 0.0
+                and self.expression_driving_data is not None
+                and hasattr(target_face, 'landmark_2d_106')
+                and target_face.landmark_2d_106 is not None):
+            try:
+                from roop.expression_reenact import ExpressionReenactor
+                from roop.face_3d_recon import landmarks_to_crop_space
+                lm_crop = landmarks_to_crop_space(target_face.landmark_2d_106, M)
+                reenactor = ExpressionReenactor.instance()
+                fake_frame = reenactor.apply(
+                    fake_frame, lm_crop,
+                    self.expression_driving_data,
+                    _estr, subsample_size,
+                )
+                if enhanced_frame is not None:
+                    enh_size = enhanced_frame.shape[0]
+                    lm_enh = lm_crop * (enh_size / subsample_size)
+                    enhanced_frame = reenactor.apply(
+                        enhanced_frame, lm_enh,
+                        self.expression_driving_data,
+                        _estr, enh_size,
+                    )
+            except Exception as e:
+                print(f"[ProcessMgr] Expression warp failed: {e}")
 
         upscale = 512
         orig_width = fake_frame.shape[1]
@@ -1462,9 +1517,6 @@ class ProcessMgr():
         if self.videowriter is not None:
             self.videowriter.close()
             self.videowriter = None
-        if self.streamwriter is not None:
-            self.streamwriter.Close()
-            self.streamwriter = None
         # FIX: Clear face data and cached frame references so nothing holds VRAM-backed data
         self.input_face_datas = []
         self.target_face_datas = []

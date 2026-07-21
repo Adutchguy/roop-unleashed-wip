@@ -83,6 +83,21 @@ def faceswap_tab():
                             info="Blends original target teeth/tongue back over swap artefacts. 0 = off, 1 = full original inner mouth.",
                             interactive=True,
                         )
+                        dd_expression_preset = gr.Dropdown(
+                            label="😄 Expression Preset",
+                            choices=["None", "Happy", "Sad", "Angry", "Surprised", "Fear", "Disgusted", "Pain", "Terror", "Ecstasy"],
+                            value=roop.globals.CFG.expression_preset,
+                            interactive=True,
+                            info="Apply a built-in expression warp.",
+                        )
+                        sld_expression_strength = gr.Slider(
+                            0.0, 1.0,
+                            value=roop.globals.CFG.expression_strength,
+                            step=0.05,
+                            label="Expression Warp Strength",
+                            info="How strongly to warp the swapped face toward the preset expression. 0 = off.",
+                            interactive=True,
+                        )
                         chk_use_3d_recon = gr.Checkbox(
                             label="🧊 3D source pose matching (experimental)",
                             value=roop.globals.CFG.use_3d_recon,
@@ -116,6 +131,7 @@ def faceswap_tab():
                             interactive=False,
                             visible=False,
                         )
+                    with gr.Column():
                         mask_top = gr.Slider(
                             0, 2.0, value=roop.globals.CFG.mask_top,
                             label="Offset Face Top", step=0.01, interactive=True,
@@ -136,7 +152,6 @@ def faceswap_tab():
                             0, 200, value=roop.globals.CFG.face_mask_blend,
                             label="Face Mask Edge Blend", step=1, interactive=True,
                         )
-                    with gr.Column():
                         mouth_top_scale = gr.Slider(
                             0, 2.0, value=roop.globals.CFG.mouth_top_scale,
                             label="Mouth Mask Top", step=0.01, interactive=True,
@@ -246,27 +261,26 @@ def faceswap_tab():
                     text_frame_clip = gr.Markdown('Processing frame range [0 - 0]')
                     set_frame_start = gr.Button("⬅ Set as Start", size='sm')
                     set_frame_end = gr.Button("➡ Set as End", size='sm')
-        with gr.Row(variant='panel'):
-            with gr.Column(scale=1):
-                selected_face_detection = gr.Dropdown(swap_choices, value=roop.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
-            with gr.Column(scale=1):
-                num_swap_steps = gr.Slider(1, 5, value=roop.globals.CFG.num_swap_steps, step=1.0, label="Number of swapping steps", info="More steps may increase likeness")
-            with gr.Column(scale=2):
-                ui.globals.ui_selected_enhancer = gr.Dropdown(["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"], value=roop.globals.CFG.selected_enhancer, label="Select post-processing")
+                with gr.Row(variant='panel'):
+                    with gr.Column(scale=1):
+                        selected_face_detection = gr.Dropdown(swap_choices, value=roop.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
+                    with gr.Column(scale=1):
+                        num_swap_steps = gr.Slider(1, 5, value=roop.globals.CFG.num_swap_steps, step=1.0, label="Number of swapping steps", info="More steps may increase likeness")
+                    with gr.Column(scale=2):
+                        ui.globals.ui_selected_enhancer = gr.Dropdown(["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"], value=roop.globals.CFG.selected_enhancer, label="Select post-processing")
 
-        with gr.Row(variant='panel'):
-            with gr.Column(scale=1):
-                max_face_distance = gr.Slider(0.01, 1.0, value=roop.globals.CFG.max_face_distance, label="Max Face Similarity Threshold", info="0.0 = identical 1.0 = no similarity", elem_id='max_face_distance', interactive=True)
-            with gr.Column(scale=1):
-                ui.globals.ui_upscale = gr.Dropdown(["128px", "256px", "512px"], value=roop.globals.CFG.subsample_upscale, label="Subsample upscale to", interactive=True)
-            with gr.Column(scale=2):
-                ui.globals.ui_blend_ratio = gr.Slider(0.0, 1.0, value=roop.globals.CFG.blend_ratio, label="Original/Enhanced image blend ratio", info="Only used with active post-processing")
+                with gr.Row(variant='panel'):
+                    with gr.Column(scale=1):
+                        max_face_distance = gr.Slider(0.01, 1.0, value=roop.globals.CFG.max_face_distance, label="Max Face Similarity Threshold", info="0.0 = identical 1.0 = no similarity", elem_id='max_face_distance', interactive=True)
+                    with gr.Column(scale=1):
+                        ui.globals.ui_upscale = gr.Dropdown(["128px", "256px", "512px"], value=roop.globals.CFG.subsample_upscale, label="Subsample upscale to", interactive=True)
+                    with gr.Column(scale=2):
+                        ui.globals.ui_blend_ratio = gr.Slider(0.0, 1.0, value=roop.globals.CFG.blend_ratio, label="Original/Enhanced image blend ratio", info="Only used with active post-processing")
 
         with gr.Row(variant='panel'):
             with gr.Column(scale=1):
                 video_swapping_method = gr.Dropdown(["Extract Frames to media","In-Memory processing"], value=roop.globals.CFG.video_swapping_method, label="Select video processing method", interactive=True)
                 no_face_action = gr.Dropdown(choices=no_face_choices, value=roop.globals.CFG.no_face_action, label="Action on no face detected", interactive=True)
-                vr_mode = gr.Checkbox(label="VR Mode", value=roop.globals.CFG.vr_mode)
             with gr.Column(scale=1):
                 with gr.Group():
                     autorotate = gr.Checkbox(label="Auto rotate horizontal Faces", value=roop.globals.CFG.autorotate_faces)
@@ -280,8 +294,6 @@ def faceswap_tab():
             with gr.Column():
                 bt_stop = gr.Button("⏹ Stop", variant='secondary', interactive=False)
                 gr.Button("👀 Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.globals.output_path))
-            with gr.Column(scale=2):
-                output_method = gr.Dropdown(["File","Virtual Camera", "Both"], value=roop.globals.CFG.output_method, label="Select Output Method", interactive=True)
 
         # No gr.HTML modal component needed — the masking modal is created entirely by
         # JavaScript injected via Blocks(head=MASKING_HEAD_JS) in main.py.
@@ -293,17 +305,17 @@ def faceswap_tab():
     ui.globals.ui_max_face_distance = max_face_distance
     ui.globals.ui_video_swapping_method = video_swapping_method
     ui.globals.ui_no_face_action = no_face_action
-    ui.globals.ui_vr_mode = vr_mode
     ui.globals.ui_autorotate = autorotate
     ui.globals.ui_skip_audio = roop.globals.skip_audio
     ui.globals.ui_keep_frames = roop.globals.keep_frames
     ui.globals.ui_wait_after_extraction = roop.globals.wait_after_extraction
-    ui.globals.ui_output_method = output_method
     ui.globals.ui_selected_mask_engine = selected_mask_engine
     ui.globals.ui_clip_text = clip_text
     ui.globals.ui_chk_showmaskoffsets = chk_showmaskoffsets
     ui.globals.ui_chk_restoreoriginalmouth = chk_restoreoriginalmouth
     ui.globals.ui_sld_inner_mouth_blend = sld_inner_mouth_blend
+    ui.globals.ui_dd_expression_preset = dd_expression_preset
+    ui.globals.ui_sld_expression_strength = sld_expression_strength
     ui.globals.ui_chk_use_3d_recon = chk_use_3d_recon
     ui.globals.ui_chk_use_source_bank = chk_use_source_bank
     ui.globals.ui_chk_use_frontalization = chk_use_frontalization
@@ -321,10 +333,10 @@ def faceswap_tab():
     ui.globals.ui_mouth_right_scale = mouth_right_scale
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
-                        max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, mask_json_store, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale,
+                        max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, autorotate, mask_json_store, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale,
                         chk_use_3d_recon, mask_per_frame_store,
                         chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model,
-                        sld_inner_mouth_blend]
+                        sld_inner_mouth_blend, dd_expression_preset, sld_expression_strength]
     previewoutputs = [previewimage, preview_frame_num, original_frame_img]
     input_faces.select(on_select_input_face, None, None).success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
     
@@ -349,6 +361,8 @@ def faceswap_tab():
     chk_showmaskoffsets.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     chk_restoreoriginalmouth.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     sld_inner_mouth_blend.release(fn=on_inner_mouth_blend_changed, inputs=[sld_inner_mouth_blend], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    dd_expression_preset.change(fn=on_expression_preset_changed, inputs=[dd_expression_preset], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
+    sld_expression_strength.release(fn=on_expression_strength_changed, inputs=[sld_expression_strength], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     selected_mask_engine.change(fn=on_mask_engine_changed, inputs=[selected_mask_engine], outputs=[clip_text], show_progress='hidden').success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
 
     target_faces.select(on_select_target_face, None, None)
@@ -363,11 +377,11 @@ def faceswap_tab():
 
 
     start_event = bt_start.click(fn=start_swap,
-        inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
-                    roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, mask_json_store,
+        inputs=[ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
+                    roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, video_swapping_method, no_face_action, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, mask_json_store,
                     chk_use_3d_recon, mask_per_frame_store,
                     chk_use_source_bank, chk_use_frontalization, sld_frontalization_threshold, dd_swap_model,
-                    sld_inner_mouth_blend],
+                    sld_inner_mouth_blend, dd_expression_preset, sld_expression_strength],
         outputs=[bt_start, bt_stop], show_progress='full')
 
     bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop], queue=False)
@@ -462,7 +476,6 @@ def faceswap_tab():
     ui.globals.ui_blend_ratio.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     clip_text.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     no_face_action.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
-    vr_mode.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     autorotate.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     num_swap_steps.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     ui.globals.ui_upscale.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
@@ -495,6 +508,12 @@ def on_face_mask_blend_changed(value):
 
 def on_inner_mouth_blend_changed(value):
     roop.globals.CFG.inner_mouth_blend = value
+
+def on_expression_strength_changed(value):
+    roop.globals.CFG.expression_strength = value
+
+def on_expression_preset_changed(value):
+    roop.globals.CFG.expression_preset = value
 
 def on_mouth_mask_blend_changed(value):
     set_mask_offset(5, value)
@@ -902,11 +921,11 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
 
 
 def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection, face_distance, blend_ratio,
-                              selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
+                              selected_mask_engine, clip_text, no_face_action, auto_rotate, mask_json, show_face_area, restore_original_mouth, num_steps, upsample,
                               use_3d_recon=False, mask_per_frame_json="",
                               use_source_bank=False, use_frontalization=False,
                               frontalization_threshold=25.0, swap_model='inswapper',
-                              inner_mouth_blend=0.0):
+                              inner_mouth_blend=0.0, expression_preset=None, expression_strength=0.0):
     global SELECTED_INPUT_FACE_INDEX, current_video_fps, _last_swapped_preview, _last_preview_options
 
     from roop.core import live_swap, get_processing_plugins
@@ -987,7 +1006,6 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     roop.globals.distance_threshold = face_distance
     roop.globals.blend_ratio = blend_ratio
     roop.globals.no_face_action = index_of_no_face_action(no_face_action)
-    roop.globals.vr_mode = vr_mode
     roop.globals.autorotate_faces = auto_rotate
     roop.globals.subsample_size = int(upsample[:3])
 
@@ -1006,7 +1024,9 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
                               use_frontalization=use_frontalization,
                               frontalization_threshold=frontalization_threshold,
                               swap_model=swap_model,
-                              inner_mouth_blend=float(inner_mouth_blend))
+                              inner_mouth_blend=float(inner_mouth_blend),
+                              expression_strength=float(expression_strength),
+                              expression_preset=expression_preset if expression_preset and expression_preset != 'None' else None)
     # Store so FBF frame navigation can regenerate swap previews for arbitrary frames.
     _last_preview_options = options
 
@@ -1078,16 +1098,6 @@ MASKING_HEAD_JS = """
     if (modal) { _closeModal(false); } else { _targetStoreId = 'mask_json_store'; _openModal(); }
   };
 
-  /* ── Public: Frame Editor variant — uses per-frame crop stores, skips preview gate ── */
-  window.maskToggleFrameEditor = function() {
-    var modal = document.getElementById('roop-mask-modal');
-    if (modal) { _closeModal(false); return; }
-    _targetStoreId = 'fe_mask_json_store';
-    var cropEl = document.querySelector('#fe_mask_face_crop_store textarea, #fe_mask_face_crop_store input');
-    var swapEl = document.querySelector('#fe_mask_face_swap_crop_store textarea, #fe_mask_face_swap_crop_store input');
-    _openModal(cropEl ? cropEl.value : '', swapEl ? swapEl.value : '', true);
-  };
-
   /* ── Public: called when target media is removed — closes modal if open
      and resets state so no stale mask lingers for the next file. ─────── */
   window.maskReset = function() {
@@ -1103,9 +1113,7 @@ MASKING_HEAD_JS = """
   };
 
   /* ── Open ─────────────────────────────────────────────────────────── */
-  /* faceCropUrlArg, swpCropUrlArg, skipGateCheck are used by maskToggleFrameEditor
-     to pass pre-loaded image URLs and bypass the faceswap-tab DOM lookups. */
-  function _openModal(faceCropUrlArg, swpCropUrlArg, skipGateCheck) {
+  function _openModal() {
     _mode = 'exclude'; _brush = 20; _painting = false;
     _zoom = 1.0; _panX = 0; _panY = 0; _panning = false;
     _prevRafPending = false;
@@ -1124,39 +1132,33 @@ MASKING_HEAD_JS = """
 
     var faceCropUrl, swpCropUrl;
 
-    if (!skipGateCheck) {
-      var wrap = document.getElementById('roop_preview_image');
-      var previewImg = wrap ? wrap.querySelector('img') : null;
-      if (!previewImg || !previewImg.src || previewImg.naturalWidth === 0) {
-        alert('Please generate a preview first before editing the mask.');
-        return;
-      }
-      /* swappedUrl = the current Gradio preview (face-swapped result).
-         Used in the live preview panel as the base image. */
-      var swappedUrl = previewImg.src;
-
-      /* faceCropUrl = the canonical 512×512 face crop produced by Python's align_crop.
-         The mask is painted in this coordinate system, so it always tracks the face
-         perfectly through any head motion without needing any affine warp.
-         Falls back to origUrl (full frame) if the crop isn't available yet. */
-      var origWrap  = document.getElementById('roop_original_frame');
-      var origImgEl = origWrap ? origWrap.querySelector('img') : null;
-      var origUrl   = (origImgEl && origImgEl.naturalWidth > 0) ? origImgEl.src : swappedUrl;
-
-      var cropStoreEl = document.querySelector('#mask_face_crop_store textarea, #mask_face_crop_store input');
-      var faceCropDataUrl = cropStoreEl ? cropStoreEl.value : '';
-      faceCropUrl = (faceCropDataUrl && faceCropDataUrl.startsWith('data:image')) ? faceCropDataUrl : origUrl;
-
-      var swpCropStoreEl = document.querySelector('#mask_face_swap_crop_store textarea, #mask_face_swap_crop_store input');
-      var swpCropDataUrl = swpCropStoreEl ? swpCropStoreEl.value : '';
-      /* Live-preview base: swapped face crop when available, else source face crop.
-         Falls back to origUrl only when no face crop was detected at all. */
-      swpCropUrl = (swpCropDataUrl && swpCropDataUrl.startsWith('data:image')) ? swpCropDataUrl : faceCropUrl;
-    } else {
-      /* Frame Editor path: caller provides the image URLs directly. */
-      faceCropUrl = faceCropUrlArg || '';
-      swpCropUrl  = swpCropUrlArg  || faceCropUrlArg || '';
+    var wrap = document.getElementById('roop_preview_image');
+    var previewImg = wrap ? wrap.querySelector('img') : null;
+    if (!previewImg || !previewImg.src || previewImg.naturalWidth === 0) {
+      alert('Please generate a preview first before editing the mask.');
+      return;
     }
+    /* swappedUrl = the current Gradio preview (face-swapped result).
+       Used in the live preview panel as the base image. */
+    var swappedUrl = previewImg.src;
+
+    /* faceCropUrl = the canonical 512×512 face crop produced by Python's align_crop.
+       The mask is painted in this coordinate system, so it always tracks the face
+       perfectly through any head motion without needing any affine warp.
+       Falls back to origUrl (full frame) if the crop isn't available yet. */
+    var origWrap  = document.getElementById('roop_original_frame');
+    var origImgEl = origWrap ? origWrap.querySelector('img') : null;
+    var origUrl   = (origImgEl && origImgEl.naturalWidth > 0) ? origImgEl.src : swappedUrl;
+
+    var cropStoreEl = document.querySelector('#mask_face_crop_store textarea, #mask_face_crop_store input');
+    var faceCropDataUrl = cropStoreEl ? cropStoreEl.value : '';
+    faceCropUrl = (faceCropDataUrl && faceCropDataUrl.startsWith('data:image')) ? faceCropDataUrl : origUrl;
+
+    var swpCropStoreEl = document.querySelector('#mask_face_swap_crop_store textarea, #mask_face_swap_crop_store input');
+    var swpCropDataUrl = swpCropStoreEl ? swpCropStoreEl.value : '';
+    /* Live-preview base: swapped face crop when available, else source face crop.
+       Falls back to origUrl only when no face crop was detected at all. */
+    swpCropUrl = (swpCropDataUrl && swpCropDataUrl.startsWith('data:image')) ? swpCropDataUrl : faceCropUrl;
 
     /* _bgImage = source face crop — the editor drawing surface.
        Painting on this ensures the mask is in canonical face-crop coordinates. */
@@ -1225,8 +1227,11 @@ MASKING_HEAD_JS = """
         '<button id="mask-btn-erase"   style="background:#1c1c1c;border:2px solid #383838;color:#999;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">&#x2B1C; Erase</button>',
         '<div style="width:1px;background:#383838;height:28px;margin:0 4px;"></div>',
         '<span style="color:#999;font-size:12px;">Brush:</span>',
-        '<input type="range" id="mask-brush-sz" min="5" max="150" value="20" style="width:100px;accent-color:#50a070;cursor:pointer;vertical-align:middle;">',
-        '<span id="mask-brush-lbl" style="color:#eee;font-size:12px;min-width:32px;">20px</span>',
+        '<button id="mask-btn-brush-dec" title="Decrease brush size" style="background:#242424;border:1px solid #444;color:#ccc;padding:3px 9px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.2;">&#x2212;</button>',
+        '<input type="range" id="mask-brush-sz" min="1" max="150" value="20" style="width:90px;accent-color:#50a070;cursor:pointer;vertical-align:middle;">',
+        '<button id="mask-btn-brush-inc" title="Increase brush size" style="background:#242424;border:1px solid #444;color:#ccc;padding:3px 9px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.2;">+</button>',
+        '<input type="number" id="mask-brush-num" min="1" max="150" step="1" value="20" title="Brush size (px)" style="width:48px;background:#2c2c2c;border:1px solid #383838;color:#eee;border-radius:5px;padding:3px 4px;font-size:12px;text-align:center;">',
+        '<span style="color:#888;font-size:11px;">px</span>',
         '<div style="width:1px;background:#383838;height:28px;margin:0 4px;"></div>',
         '<button id="mask-btn-zoom-out" title="Zoom out" style="background:#242424;border:1px solid #444;color:#ccc;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:16px;font-weight:700;line-height:1.2;">&#x2212;</button>',
         '<span id="mask-zoom-lbl" style="color:#eee;font-size:12px;min-width:40px;text-align:center;">100%</span>',
@@ -1440,6 +1445,10 @@ MASKING_HEAD_JS = """
     document.getElementById('mask-btn-apply').addEventListener('click',   function() { maskApply(); });
     document.getElementById('mask-btn-discard').addEventListener('click', function() { _closeModal(false); });
     document.getElementById('mask-brush-sz').addEventListener('input',    function() { _setBrush(this.value); });
+    document.getElementById('mask-brush-num').addEventListener('input',  function() { _setBrush(this.value); });
+    document.getElementById('mask-brush-num').addEventListener('change', function() { _setBrush(this.value); });
+    document.getElementById('mask-btn-brush-dec').addEventListener('click', function() { _setBrush(_brush - 1); });
+    document.getElementById('mask-btn-brush-inc').addEventListener('click', function() { _setBrush(_brush + 1); });
     document.getElementById('mask-btn-zoom-in').addEventListener('click',  function() { _zoomBy(1.25); });
     document.getElementById('mask-btn-zoom-out').addEventListener('click', function() { _zoomBy(0.8); });
     document.getElementById('mask-btn-zoom-rst').addEventListener('click', function() { _resetZoom(); });
@@ -1673,9 +1682,14 @@ MASKING_HEAD_JS = """
   }
 
   function _setBrush(v) {
-    _brush = parseInt(v);
-    var lbl = document.getElementById('mask-brush-lbl');
-    if (lbl) lbl.textContent = v + 'px';
+    var n = parseInt(v, 10);
+    if (isNaN(n)) n = _brush;
+    n = Math.max(1, Math.min(150, n));
+    _brush = n;
+    var rng = document.getElementById('mask-brush-sz');
+    var num = document.getElementById('mask-brush-num');
+    if (rng && Number(rng.value) !== n) rng.value = n;
+    if (num && Number(num.value) !== n) num.value = n;
   }
 
   function _drawCursor(x, y) {
@@ -2220,18 +2234,13 @@ MASKING_HEAD_JS = """
       delete allMasks[String(_fbfFaceset)];
     }
 
-    var wasFrameEditor = (_targetStoreId === 'fe_mask_json_store');
     _writeToStore(JSON.stringify(allMasks));
     _closeModal(false);
-    /* Only auto-trigger the faceswap-tab refresh preview when NOT in Frame Editor mode.
-       In Frame Editor mode the mask is stored and applied only on compile. */
-    if (!wasFrameEditor) {
-      setTimeout(function() {
-        var wrap = document.getElementById('btn_refresh_preview');
-        var btn  = wrap ? wrap.querySelector('button') : null;
-        if (btn) btn.click();
-      }, 150);
-    }
+    setTimeout(function() {
+      var wrap = document.getElementById('btn_refresh_preview');
+      var btn  = wrap ? wrap.querySelector('button') : null;
+      if (btn) btn.click();
+    }, 150);
   };
 
   /* ── Close ────────────────────────────────────────────────────────── */
@@ -2316,12 +2325,12 @@ def translate_swap_mode(dropdown_text):
     return "all"
 
 
-def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
-                selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate, restore_original_mouth, num_swap_steps, upsample, mask_json,
+def start_swap( enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
+                selected_mask_engine, clip_text, processing_method, no_face_action, autorotate, restore_original_mouth, num_swap_steps, upsample, mask_json,
                 use_3d_recon=False, mask_per_frame_json="",
                 use_source_bank=False, use_frontalization=False,
                 frontalization_threshold=25.0, swap_model='inswapper',
-                inner_mouth_blend=0.0,
+                inner_mouth_blend=0.0, expression_preset=None, expression_strength=0.0,
                 progress=gr.Progress()):
     from ui.main import prepare_environment
     from roop.core import batch_process_regular
@@ -2348,7 +2357,6 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.globals.skip_audio = skip_audio
     roop.globals.face_swap_mode = translate_swap_mode(detection)
     roop.globals.no_face_action = index_of_no_face_action(no_face_action)
-    roop.globals.vr_mode = vr_mode
     roop.globals.autorotate_faces = autorotate
     roop.globals.subsample_size = int(upsample[:3])
     mask_engine = map_mask_engine(selected_mask_engine, clip_text)
@@ -2365,14 +2373,16 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.globals.video_quality = roop.globals.CFG.video_quality
     roop.globals.max_memory = roop.globals.CFG.memory_limit if roop.globals.CFG.memory_limit > 0 else None
 
-    batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
+    batch_process_regular(list_files_process, mask_engine, clip_text, processing_method == "In-Memory processing", mask_json or None, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX,
                           use_3d_recon=use_3d_recon,
                           mask_per_frame_json=mask_per_frame_json or "",
                           use_source_bank=use_source_bank,
                           use_frontalization=use_frontalization,
                           frontalization_threshold=frontalization_threshold,
                           swap_model=swap_model,
-                          inner_mouth_blend=float(inner_mouth_blend))
+                          inner_mouth_blend=float(inner_mouth_blend),
+                          expression_strength=float(expression_strength),
+                          expression_preset=expression_preset if expression_preset and expression_preset != 'None' else None)
     is_processing = False
     yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
 

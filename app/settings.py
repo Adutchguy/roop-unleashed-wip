@@ -47,12 +47,10 @@ class Settings:
         self.blend_ratio = self.default_get(data, 'blend_ratio', 0.80)
         self.video_swapping_method = self.default_get(data, 'video_swapping_method', 'In-Memory processing')
         self.no_face_action = self.default_get(data, 'no_face_action', 'Retry rotated')
-        self.vr_mode = self.default_get(data, 'vr_mode', False)
         self.autorotate_faces = self.default_get(data, 'autorotate_faces', True)
         self.skip_audio = self.default_get(data, 'skip_audio', False)
         self.keep_frames = self.default_get(data, 'keep_frames', False)
         self.wait_after_extraction = self.default_get(data, 'wait_after_extraction', False)
-        self.output_method = self.default_get(data, 'output_method', 'File')
         self.mask_engine = self.default_get(data, 'mask_engine', 'DFL XSeg')
         self.mask_clip_text = self.default_get(data, 'mask_clip_text', 'cup,hands,hair,banana')
         self.show_mask_offsets = self.default_get(data, 'show_mask_offsets', False)
@@ -77,6 +75,8 @@ class Settings:
         self.swap_model = self.default_get(data, 'swap_model', 'inswapper')
         self.det_score_threshold = self.default_get(data, 'det_score_threshold', 0.5)
         self.inner_mouth_blend = self.default_get(data, 'inner_mouth_blend', 0.0)
+        self.expression_strength = self.default_get(data, 'expression_strength', 0.0)
+        self.expression_preset = self.default_get(data, 'expression_preset', 'None')
 
 
 
@@ -110,12 +110,10 @@ class Settings:
             'blend_ratio': self.blend_ratio,
             'video_swapping_method': self.video_swapping_method,
             'no_face_action': self.no_face_action,
-            'vr_mode': self.vr_mode,
             'autorotate_faces': self.autorotate_faces,
             'skip_audio': self.skip_audio,
             'keep_frames': self.keep_frames,
             'wait_after_extraction': self.wait_after_extraction,
-            'output_method': self.output_method,
             'mask_engine': self.mask_engine,
             'mask_clip_text': self.mask_clip_text,
             'show_mask_offsets': self.show_mask_offsets,
@@ -142,6 +140,8 @@ class Settings:
             # Detection
             'det_score_threshold': self.det_score_threshold,
             'inner_mouth_blend': self.inner_mouth_blend,
+            'expression_strength': self.expression_strength,
+            'expression_preset': self.expression_preset,
         }
         with open(self.config_file, 'w') as f:
             yaml.dump(data, f)

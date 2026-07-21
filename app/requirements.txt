@@ -9,5 +9,4 @@ psutil==5.9.6
 tqdm==4.66.4
 ftfy
 regex
-pyvirtualcam
 pydantic==2.10.6

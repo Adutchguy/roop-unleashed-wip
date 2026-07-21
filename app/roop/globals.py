@@ -12,7 +12,6 @@ frame_processors: List[str] = []
 keep_fps = None
 keep_frames = None
 autorotate_faces = None
-vr_mode = None
 skip_audio = None
 wait_after_extraction = None
 many_faces = None

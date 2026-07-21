@@ -988,17 +988,30 @@ class ProcessMgr():
             else:
                 enhanced_frame, scale_factor = p.Run(self.input_face_datas[face_index], target_face, fake_frame)
 
-        # ── Apply manual mask in canonical face-crop space ────────────────────
-        # combined=1 → keep original pixels (aligned_img)   [exclude / red paint]
-        # combined=0 → keep swapped pixels  (fake_frame)
+        # ── Resolve manual include / exclude mask (canonical crop-space) ──────
+        # combined=1 → original pixels wanted   [exclude / red paint]
+        # combined=0 → swapped pixels wanted
         #
-        # Two modes:
+        # IMPORTANT: we do NOT blend this into fake_frame/enhanced_frame here.
+        # Doing so previously replaced the excluded area with `aligned_img`,
+        # which had already been downsampled to subsample_size and would later
+        # be upsampled again to the paste resolution (and, for angled faces,
+        # warped a second time) — a double/triple resample that visibly
+        # softened the "excluded" region relative to the true source frame.
+        # Instead we carry `_exclude_mask_crop` (same canonical coordinate
+        # space fake_frame is in right now) through to paste_upscale, which
+        # composites it straight against the pristine, never-resampled
+        # `frame`, with the same edge feathering (mask_offsets[4]) used for
+        # the rest of the face mask.
+        #
+        # Two source modes:
         #   canonical=True  — mask painted directly on face crop; resize to subsample_size.
         #   ref_kps         — legacy mask in full-frame coords; warp via M_ref.
         #                     Uses orig_fh/orig_fw so autorotate_faces doesn't corrupt dims.
         #
         # face_index selects the per-faceset mask; falls back to faceset 0 when only
         # one mask was painted (single-face / "first found" scenarios).
+        _exclude_mask_crop = None
         _fm = self.face_masks.get(face_index)
         if _fm is None and self.face_masks:
             _fm = self.face_masks.get(0)
@@ -1030,22 +1043,9 @@ class ProcessMgr():
                         combined_can = combined_can * (1.0 - inc_can)
 
                     if np.any(combined_can > 0):
-                        c3 = combined_can[:, :, np.newaxis]
-                        fake_frame = (fake_frame.astype(np.float32) * (1.0 - c3) +
-                                      aligned_img.astype(np.float32) * c3).astype(np.uint8)
-                        if enhanced_frame is not None:
-                            eh, ew = enhanced_frame.shape[:2]
-                            if (eh, ew) != (subsample_size, subsample_size):
-                                c3e = cv2.resize(combined_can, (ew, eh),
-                                                 interpolation=cv2.INTER_LINEAR)[:, :, np.newaxis]
-                                orig_enh = cv2.resize(aligned_img, (ew, eh),
-                                                      interpolation=cv2.INTER_CUBIC)
-                            else:
-                                c3e, orig_enh = c3, aligned_img
-                            enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
-                                              orig_enh.astype(np.float32) * c3e).astype(np.uint8)
+                        _exclude_mask_crop = combined_can
                 except Exception as e:
-                    print(f"[ProcessMgr] Canonical mask application failed: {e}")
+                    print(f"[ProcessMgr] Canonical mask resolution failed: {e}")
 
             elif _ref_kps is not None:
                 try:
@@ -1080,22 +1080,9 @@ class ProcessMgr():
                         combined_can = combined_can * (1.0 - inc_can)
 
                     if np.any(combined_can > 0):
-                        c3 = combined_can[:, :, np.newaxis]
-                        fake_frame = (fake_frame.astype(np.float32) * (1.0 - c3) +
-                                      aligned_img.astype(np.float32) * c3).astype(np.uint8)
-                        if enhanced_frame is not None:
-                            eh, ew = enhanced_frame.shape[:2]
-                            if (eh, ew) != (subsample_size, subsample_size):
-                                c3e = cv2.resize(combined_can, (ew, eh),
-                                                 interpolation=cv2.INTER_LINEAR)[:, :, np.newaxis]
-                                orig_enh = cv2.resize(aligned_img, (ew, eh),
-                                                      interpolation=cv2.INTER_CUBIC)
-                            else:
-                                c3e, orig_enh = c3, aligned_img
-                            enhanced_frame = (enhanced_frame.astype(np.float32) * (1.0 - c3e) +
-                                              orig_enh.astype(np.float32) * c3e).astype(np.uint8)
+                        _exclude_mask_crop = combined_can
                 except Exception as e:
-                    print(f"[ProcessMgr] Warp-based mask application failed: {e}")
+                    print(f"[ProcessMgr] Warp-based mask resolution failed: {e}")
 
         # ── Expression warp (post-swap, pre-paste) ───────────────────────────
         # Warps the swapped face crop toward the user-supplied expression
@@ -1138,9 +1125,9 @@ class ProcessMgr():
         face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
-            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
+            result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, exclude_mask=_exclude_mask_crop)
         else:
-            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
+            result = self.paste_upscale(fake_frame, enhanced_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm, exclude_mask=_exclude_mask_crop)
 
         # ── Inner-mouth (teeth / tongue) blend ───────────────────────────────
         # Blends the original target frame back into the inner-lip opening so
@@ -1195,7 +1182,7 @@ class ProcessMgr():
         return blended_image.astype(np.uint8)
 
 
-    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None):
+    def paste_upscale(self, fake_face, upsk_face, M, target_img, scale_factor, mask_offsets, face_landmarks=None, exclude_mask=None):
         M_scale = M * scale_factor
         IM = cv2.invertAffineTransform(M_scale)
 
@@ -1239,6 +1226,26 @@ class ProcessMgr():
 
         paste_face = img_matte * paste_face
         paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
+
+        # ── Manual exclude/include mask ───────────────────────────────────────
+        # Applied last, directly against the pristine target_img — never the
+        # resampled crop — so user-excluded regions stay full quality. Warped
+        # through the same IM used for the swap mask and feathered with the
+        # same face_mask_blend edge setting (mask_offsets[4]) so the falloff
+        # matches the rest of the face mask / the UI's edge blend control.
+        if exclude_mask is not None:
+            em = exclude_mask
+            if em.shape[:2] != (h, w):
+                em = cv2.resize((em * 255.0).clip(0, 255).astype(np.uint8), (w, h),
+                                 interpolation=cv2.INTER_LINEAR)
+            else:
+                em = (em * 255.0).clip(0, 255).astype(np.uint8)
+            em_full = cv2.warpAffine(em, IM, (target_img.shape[1], target_img.shape[0]),
+                                      flags=cv2.INTER_LINEAR, borderValue=0.0)
+            em_full[:1, :] = em_full[-1:, :] = em_full[:, :1] = em_full[:, -1:] = 0
+            em_full = self.blur_area(em_full, mask_offsets[4])
+            em_full = (em_full.astype(np.float32) / 255)[:, :, np.newaxis]
+            paste_face = paste_face * (1 - em_full) + target_img.astype(np.float32) * em_full
 
         if self.options.show_face_area_overlay:
             # Gradient overlay: green in the core (mask≈1), yellow/orange at the

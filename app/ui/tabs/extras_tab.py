@@ -42,21 +42,24 @@ def extras_tab(bt_destfiles=None):
     with gr.Tab("✏️ Editor"):
 
         # ── Upload + Preview ──────────────────────────────────────────
-        with gr.Row():
-            with gr.Column(scale=1):
-                files_to_process = gr.Files(
-                    label="Upload file",
-                    file_count="multiple",
-                    file_types=["image", "video", ".webp"],
-                )
-            with gr.Column(scale=2):
-                preview_image = gr.Image(
-                    label="Preview", visible=False, interactive=False,
-                    show_download_button=False,
-                )
-                preview_video = gr.Video(
-                    label="Preview", visible=False, interactive=False,
-                )
+        with gr.Column():
+            files_to_process = gr.Files(
+                label="Upload file",
+                file_count="multiple",
+                file_types=["image", "video", ".webp"],
+            )
+            # Fixed-size preview box (2x the start/end trim previews below) —
+            # the container spans the full tab width, but the media itself is
+            # capped at 960x720 and scaled to fit via object-fit: contain.
+            preview_image = gr.Image(
+                label="Preview", visible=False, interactive=False,
+                show_download_button=False,
+                height=720, width=960,
+            )
+            preview_video = gr.Video(
+                label="Preview", visible=False, interactive=False,
+                height=720, width=960,
+            )
 
         # ── Operations ────────────────────────────────────────────────
         with gr.Row(equal_height=True):

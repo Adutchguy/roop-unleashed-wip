@@ -6,6 +6,17 @@ import roop.utilities as util
 import roop.util_ffmpeg as ffmpeg
 import roop.globals
 
+# gradio_rangeslider gives us a single dual-handle timeline for trim start/end.
+# It's an optional extra (see requirements.txt) — if it isn't installed yet
+# (e.g. the launcher hasn't been reinstalled since it was added), fall back to
+# a plain pair of Start/End sliders so the tab still works.
+try:
+    from gradio_rangeslider import RangeSlider
+    HAS_RANGESLIDER = True
+except Exception:
+    RangeSlider = None
+    HAS_RANGESLIDER = False
+
 RESOLUTION_CHOICES = ["1280x720", "1920x1080", "854x480", "3840x2160"]
 ROTATION_CHOICES   = [
     "None (no change)",
@@ -21,10 +32,12 @@ ROTATE_FILTERS = {
     "Flip Vertical":         ["vflip"],
 }
 
+_EMPTY_INFO = {"width": 0, "height": 0, "fps": 24.0, "duration": 0.0, "is_video": False}
+
 
 def extras_tab(bt_destfiles=None):
     # State: tracks detected properties of the current file
-    file_info = gr.State({"width": 0, "height": 0, "fps": 24.0, "duration": 0.0, "is_video": False})
+    file_info = gr.State(dict(_EMPTY_INFO))
 
     with gr.Tab("✏️ Editor"):
 
@@ -70,11 +83,34 @@ def extras_tab(bt_destfiles=None):
 
         # ── Trim ──────────────────────────────────────────────────────
         with gr.Group(visible=False) as trim_group:
-            gr.Markdown("#### Trim  *(cut to a start/end time, in seconds)*")
+            if HAS_RANGESLIDER:
+                gr.Markdown("#### Trim  *(drag either handle to set the start / end time)*")
+            else:
+                gr.Markdown("#### Trim  *(set a start / end time, in seconds)*")
             current_duration_label = gr.Markdown("**Current:** —")
             with gr.Row():
-                trim_start = gr.Slider(0, 1, value=0, step=0.1, label="Start (s)")
-                trim_end   = gr.Slider(0, 1, value=1, step=0.1, label="End (s)")
+                # Fixed-size thumbnail boxes — the actual frame (whatever its
+                # aspect ratio) is scaled down to fit inside via object-fit:
+                # contain, rather than stretching the layout to the frame size.
+                trim_start_preview = gr.Image(
+                    label="Start frame", visible=False, interactive=False,
+                    show_download_button=False,
+                    height=120, width=160, scale=0,
+                )
+                trim_end_preview = gr.Image(
+                    label="End frame", visible=False, interactive=False,
+                    show_download_button=False,
+                    height=120, width=160, scale=0,
+                )
+            if HAS_RANGESLIDER:
+                trim_range = RangeSlider(
+                    0, 1, value=(0, 1), step=0.1,
+                    label="Trim range (s)", show_label=False,
+                )
+            else:
+                with gr.Row():
+                    trim_start = gr.Slider(0, 1, value=0, step=0.1, label="Start (s)")
+                    trim_end   = gr.Slider(0, 1, value=1, step=0.1, label="End (s)")
 
         # ── Crop ──────────────────────────────────────────────────────
         with gr.Group():
@@ -119,33 +155,86 @@ def extras_tab(bt_destfiles=None):
         show_progress="hidden",
     )
 
-    files_to_process.upload(
-        fn=on_file_upload,
-        inputs=[files_to_process],
-        outputs=[
-            preview_image, preview_video,
-            current_res_label, resize_resolution,
-            current_fps_label, fps_value,
-            fps_group,
-            current_duration_label, trim_start, trim_end,
-            trim_group,
-            file_info,
-        ],
-        show_progress="hidden",
-    )
+    if HAS_RANGESLIDER:
+        files_to_process.upload(
+            fn=on_file_upload_range,
+            inputs=[files_to_process],
+            outputs=[
+                preview_image, preview_video,
+                current_res_label, resize_resolution,
+                current_fps_label, fps_value,
+                fps_group,
+                current_duration_label,
+                trim_start_preview, trim_end_preview,
+                trim_range,
+                trim_group,
+                file_info,
+            ],
+            show_progress="hidden",
+        )
 
-    btn_apply.click(
-        fn=on_apply_all,
-        inputs=[
-            files_to_process,
-            resize_resolution, rotation_choice,
-            fps_value,
-            trim_start, trim_end,
-            crop_left, crop_right, crop_top, crop_bottom,
-            file_info,
-        ],
-        outputs=[output_image, output_video, output_path_state],
-    )
+        trim_range.release(
+            fn=on_trim_release_range,
+            inputs=[files_to_process, trim_range],
+            outputs=[trim_start_preview, trim_end_preview],
+            show_progress="hidden",
+        )
+
+        btn_apply.click(
+            fn=on_apply_all_range,
+            inputs=[
+                files_to_process,
+                resize_resolution, rotation_choice,
+                fps_value,
+                trim_range,
+                crop_left, crop_right, crop_top, crop_bottom,
+                file_info,
+            ],
+            outputs=[output_image, output_video, output_path_state],
+        )
+    else:
+        files_to_process.upload(
+            fn=on_file_upload_pair,
+            inputs=[files_to_process],
+            outputs=[
+                preview_image, preview_video,
+                current_res_label, resize_resolution,
+                current_fps_label, fps_value,
+                fps_group,
+                current_duration_label,
+                trim_start_preview, trim_end_preview,
+                trim_start, trim_end,
+                trim_group,
+                file_info,
+            ],
+            show_progress="hidden",
+        )
+
+        trim_start.release(
+            fn=on_trim_release_pair,
+            inputs=[files_to_process, trim_start, trim_end],
+            outputs=[trim_start_preview, trim_end_preview],
+            show_progress="hidden",
+        )
+        trim_end.release(
+            fn=on_trim_release_pair,
+            inputs=[files_to_process, trim_start, trim_end],
+            outputs=[trim_start_preview, trim_end_preview],
+            show_progress="hidden",
+        )
+
+        btn_apply.click(
+            fn=on_apply_all_pair,
+            inputs=[
+                files_to_process,
+                resize_resolution, rotation_choice,
+                fps_value,
+                trim_start, trim_end,
+                crop_left, crop_right, crop_top, crop_bottom,
+                file_info,
+            ],
+            outputs=[output_image, output_video, output_path_state],
+        )
 
     if bt_destfiles is not None:
         send_to_faceswap_btn.click(
@@ -162,25 +251,22 @@ def on_file_clear():
     return hidden, hidden, hidden, hidden, None
 
 
-def on_file_upload(files):
-    empty = (
-        gr.update(visible=False, value=None),
-        gr.update(visible=False, value=None),
-        gr.update(value="**Current:** —"),
-        gr.update(choices=RESOLUTION_CHOICES, value=RESOLUTION_CHOICES[0]),
-        gr.update(value="**Current:** —"),
-        gr.update(value=30),
-        gr.update(visible=False),
-        gr.update(value="**Current:** —"),
-        gr.update(minimum=0, maximum=1, value=0),
-        gr.update(minimum=0, maximum=1, value=1),
-        gr.update(visible=False),
-        {"width": 0, "height": 0, "fps": 24.0, "duration": 0.0, "is_video": False},
-    )
+def _get_path(files):
     if not files:
-        return empty
+        return None
+    return files[0].name if hasattr(files[0], 'name') else str(files[0])
 
-    path = files[0].name if hasattr(files[0], 'name') else str(files[0])
+
+def _probe_file(files):
+    """Shared detection logic for on_file_upload_range/on_file_upload_pair.
+
+    Returns a dict of computed fields; {'valid': False} if there's no usable
+    file (nothing uploaded, or an unsupported type).
+    """
+    path = _get_path(files)
+    if path is None:
+        return {"valid": False}
+
     is_awebp   = util.is_animated_webp(path)
     is_agif    = util.is_animated_gif(path)
     is_animated = is_awebp or is_agif
@@ -188,22 +274,20 @@ def on_file_upload(files):
     is_vid = util.is_video(path) or is_animated
 
     if not is_img and not is_vid:
-        return empty
+        return {"valid": False}
 
-    # Detect properties
     w, h = util.detect_dimensions(path)
-    if is_vid and not is_animated:
-        fps = util.detect_fps(path)
-    elif is_animated:
-        fps = util.detect_fps(path)  # PIL-based for webp; cv2-based for gif
-    else:
-        fps = 24.0
+    fps = util.detect_fps(path) if (is_vid or is_animated) else 24.0
 
-    # Trim only applies to real (non-animated) video files for now.
+    # Trim (and its frame previews) only applies to real, non-animated video.
     is_trimmable = is_vid and not is_animated
     duration = util.detect_duration(path) if is_trimmable else 0.0
 
-    # Build resolution dropdown choices with current res at top
+    start_thumb = end_thumb = None
+    if is_trimmable and duration > 0:
+        start_thumb = util.extract_frame_at(path, 0.0)
+        end_thumb   = util.extract_frame_at(path, duration)
+
     current_res = f"{w}x{h}" if w and h else RESOLUTION_CHOICES[0]
     choices = [current_res] + [r for r in RESOLUTION_CHOICES if r != current_res]
 
@@ -211,30 +295,113 @@ def on_file_upload(files):
         "width": w, "height": h, "fps": fps, "duration": duration,
         "is_video": is_vid, "is_animated_gif": is_agif, "is_animated_webp": is_awebp,
     }
+    return {
+        "valid": True, "path": path,
+        "is_img": is_img, "is_vid": is_vid, "is_animated": is_animated,
+        "w": w, "h": h, "fps": fps,
+        "is_trimmable": is_trimmable, "duration": duration,
+        "start_thumb": start_thumb, "end_thumb": end_thumb,
+        "current_res": current_res, "choices": choices,
+        "info": info,
+    }
 
-    # Animated webp/gif previews in the image component (browsers render them natively)
-    show_as_img = is_img or is_animated
-    show_as_vid = is_vid and not is_animated
+
+def _common_upload_updates(r):
+    """Everything the two on_file_upload_* variants share — all outputs
+    except the trim control itself (1 component for RangeSlider, 2 for the
+    fallback pair), returned as (before, after) to be spliced around it."""
+    if not r["valid"]:
+        before = (
+            gr.update(visible=False, value=None),
+            gr.update(visible=False, value=None),
+            gr.update(value="**Current:** —"),
+            gr.update(choices=RESOLUTION_CHOICES, value=RESOLUTION_CHOICES[0]),
+            gr.update(value="**Current:** —"),
+            gr.update(value=30),
+            gr.update(visible=False),
+            gr.update(value="**Current:** —"),
+            gr.update(visible=False, value=None),
+            gr.update(visible=False, value=None),
+        )
+        after = (gr.update(visible=False), dict(_EMPTY_INFO))
+        return before, after
+
+    show_as_img = r["is_img"] or r["is_animated"]
+    show_as_vid = r["is_vid"] and not r["is_animated"]
+    before = (
+        gr.update(visible=show_as_img, value=r["path"] if show_as_img else None),
+        gr.update(visible=show_as_vid, value=r["path"] if show_as_vid else None),
+        gr.update(value=f"**Current:** {r['w']} × {r['h']}"),
+        gr.update(choices=r["choices"], value=r["current_res"]),
+        gr.update(value=f"**Current:** {r['fps']:.2f} fps"),
+        gr.update(value=round(r["fps"])),
+        gr.update(visible=r["is_vid"]),
+        gr.update(value=f"**Current:** {r['duration']:.2f}s" if r["is_trimmable"] else "**Current:** —"),
+        gr.update(visible=r["is_trimmable"], value=r["start_thumb"]),
+        gr.update(visible=r["is_trimmable"], value=r["end_thumb"]),
+    )
+    after = (gr.update(visible=r["is_trimmable"]), r["info"])
+    return before, after
+
+
+def on_file_upload_range(files):
+    r = _probe_file(files)
+    before, after = _common_upload_updates(r)
+    if not r["valid"]:
+        trim_update = gr.update(minimum=0, maximum=1, value=(0, 1))
+    else:
+        dur = max(r["duration"], 0.1)
+        trim_update = gr.update(minimum=0, maximum=dur, value=(0, r["duration"]), step=0.1)
+    return before + (trim_update,) + after
+
+
+def on_file_upload_pair(files):
+    r = _probe_file(files)
+    before, after = _common_upload_updates(r)
+    if not r["valid"]:
+        trim_updates = (
+            gr.update(minimum=0, maximum=1, value=0),
+            gr.update(minimum=0, maximum=1, value=1),
+        )
+    else:
+        dur = max(r["duration"], 0.1)
+        trim_updates = (
+            gr.update(minimum=0, maximum=dur, value=0, step=0.1),
+            gr.update(minimum=0, maximum=dur, value=r["duration"], step=0.1),
+        )
+    return before + trim_updates + after
+
+
+def on_trim_release_range(files, trim_range):
+    """Refresh the start/end thumbnails once the user lets go of a handle.
+
+    Deliberately wired to `.release` rather than `.input` — reopening the
+    video and seeking on every intermediate drag position would make
+    dragging feel laggy; a single seek on release stays snappy.
+    """
+    path = _get_path(files)
+    if path is None or trim_range is None:
+        return gr.update(), gr.update()
+    lo, hi = trim_range
     return (
-        gr.update(visible=show_as_img, value=path if show_as_img else None),
-        gr.update(visible=show_as_vid, value=path if show_as_vid else None),
-        gr.update(value=f"**Current:** {w} × {h}"),
-        gr.update(choices=choices, value=current_res),
-        gr.update(value=f"**Current:** {fps:.2f} fps"),
-        gr.update(value=round(fps)),
-        gr.update(visible=is_vid),
-        gr.update(value=f"**Current:** {duration:.2f}s" if is_trimmable else "**Current:** —"),
-        gr.update(minimum=0, maximum=max(duration, 0.1), value=0, step=0.1),
-        gr.update(minimum=0, maximum=max(duration, 0.1), value=duration, step=0.1),
-        gr.update(visible=is_trimmable),
-        info,
+        gr.update(value=util.extract_frame_at(path, lo)),
+        gr.update(value=util.extract_frame_at(path, hi)),
     )
 
 
-def on_apply_all(files, resolution, rotation, fps,
-                 trim_start, trim_end,
-                 crop_left, crop_right, crop_top, crop_bottom,
-                 file_info):
+def on_trim_release_pair(files, trim_start, trim_end):
+    path = _get_path(files)
+    if path is None:
+        return gr.update(), gr.update()
+    return (
+        gr.update(value=util.extract_frame_at(path, trim_start)),
+        gr.update(value=util.extract_frame_at(path, trim_end)),
+    )
+
+
+def _apply_all_core(files, resolution, rotation, fps, trim_start, trim_end,
+                    crop_left, crop_right, crop_top, crop_bottom,
+                    file_info):
     no_output = (
         gr.update(visible=False, value=None),
         gr.update(visible=False, value=None),
@@ -261,6 +428,7 @@ def on_apply_all(files, resolution, rotation, fps,
     trim_active = (
         is_trimmable
         and trim_end is not None
+        and trim_start is not None
         and trim_end > trim_start
         and (trim_start > 0.01 or trim_end < cur_duration - 0.01)
     )
@@ -340,9 +508,26 @@ def on_apply_all(files, resolution, rotation, fps,
     return gr.update(visible=False, value=None), gr.update(visible=True, value=first), out
 
 
+def on_apply_all_range(files, resolution, rotation, fps, trim_range,
+                       crop_left, crop_right, crop_top, crop_bottom,
+                       file_info):
+    trim_start, trim_end = trim_range if trim_range is not None else (0.0, 0.0)
+    return _apply_all_core(
+        files, resolution, rotation, fps, trim_start, trim_end,
+        crop_left, crop_right, crop_top, crop_bottom, file_info,
+    )
+
+
+def on_apply_all_pair(files, resolution, rotation, fps, trim_start, trim_end,
+                      crop_left, crop_right, crop_top, crop_bottom,
+                      file_info):
+    return _apply_all_core(
+        files, resolution, rotation, fps, trim_start, trim_end,
+        crop_left, crop_right, crop_top, crop_bottom, file_info,
+    )
+
+
 def on_send_to_faceswap(paths):
     if not paths:
         return None
     return paths
-
-

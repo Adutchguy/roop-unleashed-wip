@@ -8,11 +8,7 @@ __pycache__
 *.pth
 venv
 
-# Pinokio launcher env/cache
-/env
-/start.bat
-/run.bat
-/start.sh
+# Local runtime dirs
 cache
 logs
 

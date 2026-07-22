@@ -98,6 +98,32 @@ def detect_duration(target_path: str) -> float:
     return duration
 
 
+def extract_frame_at(target_path: str, seconds: float):
+    """Grabs a single video frame near the given timestamp for use as a thumbnail.
+
+    Returns an RGB numpy array (ready for gr.Image), or None on failure. The
+    requested timestamp is clamped just inside [0, duration) so seeking to the
+    very end of the file doesn't land past the last decodable frame.
+    """
+    if not target_path or seconds is None:
+        return None
+    cap = cv2.VideoCapture(target_path)
+    if not cap.isOpened():
+        cap.release()
+        return None
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    duration = (frame_count / fps) if fps and frame_count else 0.0
+    frame_dur = (1.0 / fps) if fps else 0.0
+    ts = max(0.0, min(float(seconds), max(duration - frame_dur, 0.0)))
+    cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok or frame is None:
+        return None
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
 def detect_dimensions(target_path: str):
     """Returns (width, height) for images and videos. Returns (0, 0) on failure."""
     if is_image(target_path):

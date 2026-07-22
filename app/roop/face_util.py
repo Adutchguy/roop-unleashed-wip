@@ -209,6 +209,98 @@ def rotate_image_180(image):
     return np.flip(image, 0)
 
 
+def rotate_image_any(image, angle_degrees):
+    """Rotate `image` by an arbitrary angle (in degrees) around its own center.
+
+    Positive angle = counter-clockwise, matching cv2.getRotationMatrix2D's
+    convention. Output keeps the same width/height as the input, so corners
+    can be clipped -- callers should pad the crop generously (see
+    find_upright_rotation) before calling this.
+    """
+    (h, w) = image.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle_degrees, 1.0)
+    return cv2.warpAffine(image, M, (w, h), borderValue=0.0)
+
+
+def estimate_roll_angle(kps):
+    """Signed in-plane roll of a face, in degrees, from its 5-point keypoints.
+
+    0 = upright (eyes level). Computed from the eye-to-eye line
+    (kps[0] = image-left eye, kps[1] = image-right eye for an upright face,
+    per the insightface 5-point convention). Sufficient for the +-90 degree
+    range that in-plane rotation correction targets here.
+    """
+    left_eye, right_eye = kps[0], kps[1]
+    dx = float(right_eye[0] - left_eye[0])
+    dy = float(right_eye[1] - left_eye[1])
+    return float(np.degrees(np.arctan2(dy, dx)))
+
+
+def _try_rotation_angle(get_first_face_fn, cutframe, angle):
+    """Rotate `cutframe` by `angle` degrees and re-detect a face in it.
+
+    Returns (rotated_frame, face, residual_roll_degrees), or None if no
+    face with valid keypoints is found in the rotated crop.
+    """
+    rotated = rotate_image_any(cutframe, angle)
+    face = get_first_face_fn(rotated)
+    if face is None or not hasattr(face, 'kps') or face.kps is None:
+        return None
+    residual = estimate_roll_angle(face.kps)
+    return rotated, face, residual
+
+
+def find_upright_rotation(get_first_face_fn, cutframe, rough_angle, threshold=5.0):
+    """Rotate a padded face cutout so the face is close to upright, re-detecting
+    after each trial rotation so downstream alignment/swap gets accurate
+    landmarks instead of ones estimated from a tilted view (landmark and
+    swap-model quality both degrade the further a face is from upright).
+
+    `rough_angle` is an initial roll estimate (degrees), typically taken from
+    a detection on the *un-rotated* frame -- noisy for large tilts, and the
+    sign of "clockwise vs counter-clockwise correction" can be ambiguous
+    depending on caller conventions, so this tries the estimate in both
+    rotational directions and keeps whichever leaves the smallest residual
+    tilt, then takes one more pass using the now-accurate landmarks to
+    fine-tune (again trying both directions, so a sign mistake anywhere in
+    the estimate can never make things worse than doing nothing).
+
+    Returns (rotated_frame, face, total_angle_applied), or (None, None, 0.0)
+    if the face is already upright or no candidate rotation yields a usable
+    detection (caller should fall back to the un-rotated frame in that case).
+    """
+    if rough_angle is None or abs(rough_angle) < threshold:
+        return None, None, 0.0
+
+    best = None  # (abs_residual, frame, face, angle, residual)
+    for candidate in (rough_angle, -rough_angle):
+        result = _try_rotation_angle(get_first_face_fn, cutframe, candidate)
+        if result is None:
+            continue
+        rotated, face, residual = result
+        if best is None or abs(residual) < best[0]:
+            best = (abs(residual), rotated, face, candidate, residual)
+
+    if best is None:
+        return None, None, 0.0
+
+    _, rotated, face, angle, residual = best
+
+    if threshold <= abs(residual) < 45.0:
+        refined = None
+        for correction in (residual, -residual):
+            result = _try_rotation_angle(get_first_face_fn, rotated, correction)
+            if result is None:
+                continue
+            r_frame, r_face, r_residual = result
+            if refined is None or abs(r_residual) < abs(refined[3]):
+                refined = (r_frame, r_face, angle + correction, r_residual)
+        if refined is not None and abs(refined[3]) < abs(residual):
+            rotated, face, angle = refined[0], refined[1], refined[2]
+
+    return rotated, face, angle
+
+
 # alignment code from insightface https://github.com/deepinsight/insightface/blob/master/python-package/insightface/utils/face_align.py
 
 arcface_dst = np.array(

@@ -5,7 +5,7 @@ import psutil
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, rotate_image_any, estimate_roll_angle, find_upright_rotation
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -812,25 +812,24 @@ class ProcessMgr():
         inputface = None
 
         rotation_action = None
+        rotation_angle = 0.0
         if roop.globals.autorotate_faces:
-            rotation_action = self.rotation_action(target_face, frame)
-            if rotation_action is not None:
-                (startX, startY, endX, endY) = target_face["bbox"].astype("int")
-                width = endX - startX
-                height = endY - startY
-                offs = int(max(width, height) * 0.25)
-                rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
-                if rotation_action == "rotate_anticlockwise":
-                    rotcutframe = rotate_anticlockwise(rotcutframe)
-                elif rotation_action == "rotate_clockwise":
-                    rotcutframe = rotate_clockwise(rotcutframe)
-                rotface = get_first_face(rotcutframe)
-                if rotface is None:
-                    rotation_action = None
-                else:
-                    saved_frame = frame.copy()
-                    frame = rotcutframe
-                    target_face = rotface
+            rough_angle = 0.0
+            if hasattr(target_face, 'kps') and target_face.kps is not None:
+                rough_angle = estimate_roll_angle(target_face.kps)
+            (startX, startY, endX, endY) = target_face["bbox"].astype("int")
+            width = endX - startX
+            height = endY - startY
+            # An arbitrary-angle rotation needs more headroom around the face
+            # than a 90-degree snap does, so corners aren't clipped.
+            offs = int(max(width, height) * 0.6)
+            rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
+            rotated, rotface, rotation_angle = find_upright_rotation(get_first_face, rotcutframe, rough_angle)
+            if rotated is not None:
+                saved_frame = frame.copy()
+                frame = rotated
+                target_face = rotface
+                rotation_action = "rotate_angle"
 
         # ── Model output size (inswapper uses 128 × 128) ─────────────────────
         swap_p = next((p for p in self.processors if p.type == 'swap'), None)
@@ -1147,7 +1146,7 @@ class ProcessMgr():
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
 
         if rotation_action is not None:
-            fake_frame = self.auto_unrotate_frame(result, rotation_action)
+            fake_frame = rotate_image_any(result, -rotation_angle)
             result = self.paste_simple(fake_frame, saved_frame, startX, startY)
         
         return result

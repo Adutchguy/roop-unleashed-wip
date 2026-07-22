@@ -88,6 +88,8 @@ def extras_tab(bt_destfiles=None):
             else:
                 gr.Markdown("#### Trim  *(set a start / end time, in seconds)*")
             current_duration_label = gr.Markdown("**Current:** —")
+            # Start preview / timeline / end preview, laid out left-to-right
+            # like bookends around the trim control.
             with gr.Row():
                 # Fixed-size thumbnail boxes — the actual frame (whatever its
                 # aspect ratio) is scaled down to fit inside via object-fit:
@@ -95,22 +97,23 @@ def extras_tab(bt_destfiles=None):
                 trim_start_preview = gr.Image(
                     label="Start frame", visible=False, interactive=False,
                     show_download_button=False,
-                    height=120, width=160, scale=0,
+                    height=360, width=480, scale=0,
                 )
+                with gr.Column():
+                    if HAS_RANGESLIDER:
+                        trim_range = RangeSlider(
+                            0, 1, value=(0, 1), step=0.1,
+                            label="Trim range (s)", show_label=False,
+                        )
+                    else:
+                        with gr.Row():
+                            trim_start = gr.Slider(0, 1, value=0, step=0.1, label="Start (s)")
+                            trim_end   = gr.Slider(0, 1, value=1, step=0.1, label="End (s)")
                 trim_end_preview = gr.Image(
                     label="End frame", visible=False, interactive=False,
                     show_download_button=False,
-                    height=120, width=160, scale=0,
+                    height=360, width=480, scale=0,
                 )
-            if HAS_RANGESLIDER:
-                trim_range = RangeSlider(
-                    0, 1, value=(0, 1), step=0.1,
-                    label="Trim range (s)", show_label=False,
-                )
-            else:
-                with gr.Row():
-                    trim_start = gr.Slider(0, 1, value=0, step=0.1, label="Start (s)")
-                    trim_end   = gr.Slider(0, 1, value=1, step=0.1, label="End (s)")
 
         # ── Crop ──────────────────────────────────────────────────────
         with gr.Group():

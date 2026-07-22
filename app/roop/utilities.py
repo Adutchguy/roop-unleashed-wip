@@ -67,6 +67,63 @@ def detect_fps(target_path: str) -> float:
     return fps
 
 
+def detect_duration(target_path: str) -> float:
+    """Returns duration in seconds for videos and animated images. Returns 0.0 on failure."""
+    if not target_path:
+        return 0.0
+    # Animated WebP: OpenCV can't read webp at all — derive from per-frame durations,
+    # same fallback approach used by detect_fps.
+    if target_path.lower().endswith('.webp') and is_animated_webp(target_path):
+        try:
+            from PIL import Image
+            with Image.open(target_path) as img:
+                n = getattr(img, 'n_frames', 1)
+                total_ms = 0
+                for i in range(n):
+                    img.seek(i)
+                    d = img.info.get('duration', None)
+                    total_ms += d if d and d > 0 else 100
+                return total_ms / 1000.0
+        except Exception as exc:
+            print(f"[detect_duration] WebP duration read failed: {exc}")
+        return 0.0
+    cap = cv2.VideoCapture(target_path)
+    duration = 0.0
+    if cap.isOpened():
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if fps and fps > 0 and frame_count and frame_count > 0:
+            duration = frame_count / fps
+    cap.release()
+    return duration
+
+
+def extract_frame_at(target_path: str, seconds: float):
+    """Grabs a single video frame near the given timestamp for use as a thumbnail.
+
+    Returns an RGB numpy array (ready for gr.Image), or None on failure. The
+    requested timestamp is clamped just inside [0, duration) so seeking to the
+    very end of the file doesn't land past the last decodable frame.
+    """
+    if not target_path or seconds is None:
+        return None
+    cap = cv2.VideoCapture(target_path)
+    if not cap.isOpened():
+        cap.release()
+        return None
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    duration = (frame_count / fps) if fps and frame_count else 0.0
+    frame_dur = (1.0 / fps) if fps else 0.0
+    ts = max(0.0, min(float(seconds), max(duration - frame_dur, 0.0)))
+    cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok or frame is None:
+        return None
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
 def detect_dimensions(target_path: str):
     """Returns (width, height) for images and videos. Returns (0, 0) on failure."""
     if is_image(target_path):

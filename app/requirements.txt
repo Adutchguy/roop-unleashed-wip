@@ -1,5 +1,6 @@
 numpy>=1.26,<2.0
 gradio==5.50.0
+gradio_rangeslider==0.0.8
 fastapi
 opencv-python==4.9.0.80
 onnx==1.16.0

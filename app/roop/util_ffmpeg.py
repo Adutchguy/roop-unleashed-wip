@@ -234,16 +234,38 @@ def crop_media(input_path: str, output_path: str,
 
 
 def apply_media_transforms(input_path: str, output_path: str,
-                           vf_filters: list, is_video: bool) -> bool:
-    """Apply a list of -vf filters in a single ffmpeg pass."""
-    if not vf_filters:
+                           vf_filters: list, is_video: bool,
+                           trim_start: float = 0.0, trim_end: float = None) -> bool:
+    """Apply a list of -vf filters (and an optional trim) in a single ffmpeg pass.
+
+    trim_start / trim_end — seconds. When trim_end is given and greater than
+    trim_start, the input is cut to that window before any -vf filters run
+    (so crop/rotate/scale/fps apply to the trimmed range, not the original).
+    """
+    has_trim = is_video and trim_end is not None and trim_end > trim_start
+    if not vf_filters and not has_trim:
         return False
     codec   = roop.globals.video_encoder   or 'libx264'
     quality = roop.globals.video_quality   if roop.globals.video_quality is not None else 14
-    vf = ','.join(vf_filters)
-    args = ['-i', input_path, '-vf', vf]
+
+    args = []
+    if has_trim:
+        # Input-side seek (-ss before -i): fast (jumps near the target keyframe),
+        # and still frame-accurate here because the output is being re-encoded
+        # (-t below forces ffmpeg to decode forward to the exact timestamp
+        # rather than just copying from the nearest keyframe).
+        args += ['-ss', format(trim_start, '.3f')]
+    args += ['-i', input_path]
+    if has_trim:
+        args += ['-t', format(trim_end - trim_start, '.3f')]
+    if vf_filters:
+        args += ['-vf', ','.join(vf_filters)]
     if is_video:
-        args += ['-c:v', codec, '-crf', str(quality), '-c:a', 'copy']
+        args += ['-c:v', codec, '-crf', str(quality)]
+        # Trimming needs the audio stream cut at an arbitrary (non-keyframe)
+        # timestamp, which stream-copy can't do cleanly — re-encode it instead.
+        # Otherwise keep the fast, lossless copy used by the other transforms.
+        args += ['-c:a', 'aac'] if has_trim else ['-c:a', 'copy']
     args.append(output_path)
     return run_ffmpeg(args)
 

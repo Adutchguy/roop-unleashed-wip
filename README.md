@@ -3,27 +3,9 @@
 A deepfake face-swap application for images and videos with an easy-to-use Gradio web UI.
 Supports NVIDIA (CUDA / TensorRT), AMD (DirectML / ROCm), Apple Silicon, and CPU.
 
-This repository contains both the Pinokio launcher scripts and the full application code.
-
 ---
 
-## Installation — Option 1: Pinokio (Recommended)
-
-[Pinokio](https://pinokio.computer) automates the entire install in one click.
-
-1. Open Pinokio and click **Discover** (or paste the repo URL directly).
-2. Paste the repo URL:
-   ```
-   https://github.com/Adutchguy/roop-unleashed-wip.git
-   ```
-3. Click **Download**, then **Install**.
-4. Once installed, click **Start** to launch the web UI.
-
-Pinokio will automatically detect your GPU and install the correct PyTorch and ONNX Runtime variant.
-
----
-
-## Installation — Option 2: Manual (GitHub)
+## Installation
 
 ### Prerequisites
 
@@ -254,10 +236,6 @@ The Settings tab exposes all persistent options including provider, enhancer def
 
 ## Updating
 
-### Pinokio
-Click **Update** in the sidebar.
-
-### Manual
 ```bash
 git pull
 pip install -r app/requirements.txt
@@ -267,10 +245,6 @@ pip install -r app/requirements.txt
 
 ## Resetting / Reinstalling
 
-### Pinokio
-Click **Reset** in the sidebar — this removes `app/` and lets you reinstall from scratch.
-
-### Manual
 Delete `app/env/` and recreate the virtual environment (Steps 2–4 above).
 
 ---
@@ -295,7 +269,7 @@ Lower the **Detection Score Threshold** in Settings (try 0.35–0.4). The tempor
 
 **Video upload broken after server restart**
 Gradio temp files from the previous session cause an asyncio event loop mismatch. Restart the
-app fully (stop and start again from Pinokio).
+app fully (stop the process and run `python run.py` again).
 
 ---
 
@@ -317,12 +291,6 @@ roop-unleashed-wip/
 │   ├── models/             # Downloaded model weights (gitignored)
 │   ├── requirements.txt    # Python dependencies
 │   └── run.py              # Entry point
-├── install.js              # Pinokio install script
-├── start.js                # Pinokio start script
-├── update.js               # Pinokio update script
-├── reset.js                # Pinokio reset script
-├── torch.js                # Cross-platform PyTorch installer
-├── pinokio.js              # Pinokio UI definition
 └── README.md               # This file
 ```
 

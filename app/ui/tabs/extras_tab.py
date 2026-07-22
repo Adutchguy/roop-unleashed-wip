@@ -151,30 +151,35 @@ def extras_tab(bt_destfiles=None):
     output_path_state = gr.State(None)
 
     # ── Event wiring ──────────────────────────────────────────────────
-    files_to_process.clear(
-        fn=on_file_clear,
-        outputs=[
-            preview_image, preview_video,
-            output_image, output_video,
-            output_path_state,
-        ],
-        show_progress="hidden",
-    )
-
     if HAS_RANGESLIDER:
+        upload_outputs = [
+            preview_image, preview_video,
+            current_res_label, resize_resolution,
+            current_fps_label, fps_value,
+            fps_group,
+            current_duration_label,
+            trim_start_preview, trim_end_preview,
+            trim_range,
+            trim_group,
+            file_info,
+        ]
         files_to_process.upload(
             fn=on_file_upload_range,
             inputs=[files_to_process],
-            outputs=[
-                preview_image, preview_video,
-                current_res_label, resize_resolution,
-                current_fps_label, fps_value,
-                fps_group,
-                current_duration_label,
-                trim_start_preview, trim_end_preview,
-                trim_range,
-                trim_group,
-                file_info,
+            outputs=upload_outputs,
+            show_progress="hidden",
+        )
+
+        # Removing the file resets everything: rerun the same "no file"
+        # detection path used on upload, then also reset the controls that
+        # aren't file-driven (rotation, crop) and clear any Apply output.
+        files_to_process.clear(
+            fn=on_file_clear_range,
+            outputs=upload_outputs + [
+                rotation_choice,
+                crop_left, crop_right, crop_top, crop_bottom,
+                output_image, output_video,
+                output_path_state,
             ],
             show_progress="hidden",
         )
@@ -199,19 +204,31 @@ def extras_tab(bt_destfiles=None):
             outputs=[output_image, output_video, output_path_state],
         )
     else:
+        upload_outputs = [
+            preview_image, preview_video,
+            current_res_label, resize_resolution,
+            current_fps_label, fps_value,
+            fps_group,
+            current_duration_label,
+            trim_start_preview, trim_end_preview,
+            trim_start, trim_end,
+            trim_group,
+            file_info,
+        ]
         files_to_process.upload(
             fn=on_file_upload_pair,
             inputs=[files_to_process],
-            outputs=[
-                preview_image, preview_video,
-                current_res_label, resize_resolution,
-                current_fps_label, fps_value,
-                fps_group,
-                current_duration_label,
-                trim_start_preview, trim_end_preview,
-                trim_start, trim_end,
-                trim_group,
-                file_info,
+            outputs=upload_outputs,
+            show_progress="hidden",
+        )
+
+        files_to_process.clear(
+            fn=on_file_clear_pair,
+            outputs=upload_outputs + [
+                rotation_choice,
+                crop_left, crop_right, crop_top, crop_bottom,
+                output_image, output_video,
+                output_path_state,
             ],
             show_progress="hidden",
         )
@@ -252,9 +269,26 @@ def extras_tab(bt_destfiles=None):
 
 # ── Handlers ──────────────────────────────────────────────────────────
 
-def on_file_clear():
+def _clear_extra_updates():
+    """Resets for the controls that on_file_upload_* doesn't touch — rotation
+    and crop aren't file-driven, and the Apply output area should clear too
+    once its source file is gone. Appended after the upload-style reset to
+    build the full "remove file" reset."""
     hidden = gr.update(visible=False, value=None)
-    return hidden, hidden, hidden, hidden, None
+    return (
+        gr.update(value="None (no change)"),  # rotation_choice
+        gr.update(value=0), gr.update(value=0), gr.update(value=0), gr.update(value=0),  # crop l/r/t/b
+        hidden, hidden,  # output_image, output_video
+        None,  # output_path_state
+    )
+
+
+def on_file_clear_range():
+    return on_file_upload_range([]) + _clear_extra_updates()
+
+
+def on_file_clear_pair():
+    return on_file_upload_pair([]) + _clear_extra_updates()
 
 
 def _get_path(files):

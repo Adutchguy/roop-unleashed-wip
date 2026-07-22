@@ -283,7 +283,7 @@ def faceswap_tab():
                 no_face_action = gr.Dropdown(choices=no_face_choices, value=roop.globals.CFG.no_face_action, label="Action on no face detected", interactive=True)
             with gr.Column(scale=1):
                 with gr.Group():
-                    autorotate = gr.Checkbox(label="Auto rotate horizontal Faces", value=roop.globals.CFG.autorotate_faces)
+                    autorotate = gr.Checkbox(label="Auto rotate tilted Faces (any angle)", value=roop.globals.CFG.autorotate_faces)
                     roop.globals.skip_audio = gr.Checkbox(label="Skip audio", value=roop.globals.CFG.skip_audio)
                     roop.globals.keep_frames = gr.Checkbox(label="Keep Frames (relevant only when extracting frames)", value=roop.globals.CFG.keep_frames)
                     roop.globals.wait_after_extraction = gr.Checkbox(label="Wait for user key press before creating video ", value=roop.globals.CFG.wait_after_extraction)
@@ -778,30 +778,12 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
     import base64 as _b64
     import cv2 as _cv2
     import numpy as _np
-    from roop.face_util import get_first_face, get_all_faces, align_crop, rotate_anticlockwise, rotate_clockwise
+    from roop.face_util import (get_first_face, get_all_faces, align_crop,
+                                 estimate_roll_angle, find_upright_rotation, rotate_image_any)
     import roop.globals
 
     if faceset_index is None:
         faceset_index = SELECTED_INPUT_FACE_INDEX
-
-    def _rotation_action(face, frame):
-        """Mirror ProcessMgr.rotation_action — returns direction string or None."""
-        bbox_w = face.bbox[2] - face.bbox[0]
-        bbox_h = face.bbox[3] - face.bbox[1]
-        if bbox_w <= bbox_h:
-            return None  # upright face — no rotation needed
-        # Horizontal face: use chin/forehead landmarks to pick direction
-        if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
-            forehead_x = face.landmark_2d_106[72][0]
-            chin_x     = face.landmark_2d_106[0][0]
-            if chin_x < forehead_x:
-                return "rotate_anticlockwise"
-            if forehead_x < chin_x:
-                return "rotate_clockwise"
-        # Landmark fallback: use bbox centre vs frame centre
-        fh, fw = frame.shape[:2]
-        bbox_cx = face.bbox[0] + bbox_w / 2.0
-        return "rotate_anticlockwise" if bbox_cx >= fw / 2.0 else "rotate_clockwise"
 
     def _cutout(frame, x0, y0, x1, y1):
         x0 = max(0, int(x0)); y0 = max(0, int(y0))
@@ -846,23 +828,26 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
         if face is None or not hasattr(face, 'kps') or face.kps is None:
             return None, None, None
         if roop.globals.autorotate_faces:
-            action = _rotation_action(face, frame)
-            if action is not None:
-                x0, y0, x1, y1 = face.bbox.astype(int)
-                offs = int(max(x1 - x0, y1 - y0) * 0.25)
-                cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
-                rot = rotate_anticlockwise(cut) if action == "rotate_anticlockwise" else rotate_clockwise(cut)
-                rotface = get_first_face(rot)
-                if rotface is not None and hasattr(rotface, 'kps') and rotface.kps is not None:
-                    # Capture loop variables explicitly so the closure is correct.
-                    _x0, _y0, _x1, _y1, _offs, _act = x0, y0, x1, y1, offs, action
-                    def _swap_fn(swp, __x0=_x0, __y0=_y0, __x1=_x1, __y1=_y1,
-                                 __offs=_offs, __act=_act):
-                        c = _cutout(swp, __x0 - __offs, __y0 - __offs,
-                                        __x1 + __offs, __y1 + __offs)
-                        return rotate_anticlockwise(c) if __act == "rotate_anticlockwise" \
-                               else rotate_clockwise(c)
-                    return rot, rotface.kps, _swap_fn
+            rough_angle = estimate_roll_angle(face.kps)
+            x0, y0, x1, y1 = face.bbox.astype(int)
+            # Padding just needs to comfortably cover the face; rotate_image_any
+            # expands its own canvas so no content is clipped regardless.
+            offs = int(max(x1 - x0, y1 - y0) * 0.4)
+            cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
+            rot, rotface, _M, _size, angle = find_upright_rotation(get_first_face, cut, rough_angle)
+            if rot is not None:
+                # Capture loop variables explicitly so the closure is correct.
+                _x0, _y0, _x1, _y1, _offs, _angle = x0, y0, x1, y1, offs, angle
+                def _swap_fn(swp, __x0=_x0, __y0=_y0, __x1=_x1, __y1=_y1,
+                             __offs=_offs, __angle=_angle):
+                    c = _cutout(swp, __x0 - __offs, __y0 - __offs,
+                                    __x1 + __offs, __y1 + __offs)
+                    # Same box size as `cut` above -> identical forward matrix,
+                    # so this lands in the exact same rotated coordinate space
+                    # as `rot`/`rotface.kps`, with no clipped/black corners.
+                    rotated, _, _ = rotate_image_any(c, __angle)
+                    return rotated
+                return rot, rotface.kps, _swap_fn
         # No rotation — identity transform for the swap frame too.
         return frame, face.kps, lambda swp: swp
 

@@ -209,6 +209,158 @@ def rotate_image_180(image):
     return np.flip(image, 0)
 
 
+def rotate_image_same_size(image, angle_degrees):
+    """Rotate `image` by an arbitrary angle (degrees, CCW positive, matching
+    cv2.getRotationMatrix2D) around its own center, keeping the same
+    width/height as the input.
+
+    Content that rotates outside the original frame is lost (filled black).
+    That's fine for a cheap trial detection during angle search -- only the
+    central face region needs to stay intact -- but NOT for the frame that
+    actually gets swapped/pasted back: use rotate_image_any + unrotate_image_any
+    for that, which never introduce black by clipping corners.
+    """
+    (h, w) = image.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle_degrees, 1.0)
+    return cv2.warpAffine(image, M, (w, h), borderValue=0.0)
+
+
+def rotate_image_any(image, angle_degrees):
+    """Rotate `image` by an arbitrary angle (degrees, CCW positive) around its
+    own center, expanding the canvas so the ENTIRE rotated image is kept --
+    no source content is clipped/blackened (unlike rotate_image_same_size).
+
+    Returns (rotated_image, M, (orig_w, orig_h)). M is the forward affine
+    matrix and (orig_w, orig_h) is the input size; pass both to
+    unrotate_image_any to map a result computed in the rotated canvas back
+    to the input's exact coordinate frame via the true affine inverse --
+    NOT a second forward-style rotation, which would re-clip corners and
+    scatter black wedges across the reconstructed image.
+    """
+    (h, w) = image.shape[:2]
+    cx, cy = w / 2.0, h / 2.0
+    M = cv2.getRotationMatrix2D((cx, cy), angle_degrees, 1.0)
+    cos = abs(M[0, 0])
+    sin = abs(M[0, 1])
+    new_w = int(np.ceil(h * sin + w * cos))
+    new_h = int(np.ceil(h * cos + w * sin))
+    M[0, 2] += (new_w / 2.0) - cx
+    M[1, 2] += (new_h / 2.0) - cy
+    rotated = cv2.warpAffine(image, M, (new_w, new_h), borderValue=0.0)
+    return rotated, M, (w, h)
+
+
+def unrotate_image_any(image, M, original_size):
+    """Exact inverse of rotate_image_any.
+
+    Maps `image` (same shape as the expanded canvas rotate_image_any
+    produced) back to the original (width, height) frame using the true
+    affine inverse of M, so every pixel within the reconstructed rectangle
+    comes from real source content -- no black wedge is introduced, unlike
+    applying a second forward rotation.
+    """
+    w, h = original_size
+    M_inv = cv2.invertAffineTransform(M)
+    return cv2.warpAffine(image, M_inv, (w, h), borderValue=0.0)
+
+
+def estimate_roll_angle(kps):
+    """Signed in-plane roll of a face, in degrees, from its 5-point keypoints.
+
+    0 = upright (eyes level). Computed from the eye-to-eye line
+    (kps[0] = image-left eye, kps[1] = image-right eye for an upright face,
+    per the insightface 5-point convention). Sufficient for the +-90 degree
+    range that in-plane rotation correction targets here.
+    """
+    left_eye, right_eye = kps[0], kps[1]
+    dx = float(right_eye[0] - left_eye[0])
+    dy = float(right_eye[1] - left_eye[1])
+    return float(np.degrees(np.arctan2(dy, dx)))
+
+
+def _try_rotation_angle(get_first_face_fn, cutframe, angle):
+    """Cheap trial: rotate `cutframe` by `angle` degrees (same-size, corners
+    may clip) and re-detect a face in it, purely to measure the residual
+    roll. The rotated pixels themselves are discarded -- only used to decide
+    which angle/direction is best during search, never fed into the actual
+    swap pipeline.
+
+    Returns residual_roll_degrees, or None if no face with valid keypoints
+    is found in the rotated crop.
+    """
+    rotated = rotate_image_same_size(cutframe, angle)
+    face = get_first_face_fn(rotated)
+    if face is None or not hasattr(face, 'kps') or face.kps is None:
+        return None
+    return estimate_roll_angle(face.kps)
+
+
+def find_upright_rotation(get_first_face_fn, cutframe, rough_angle, threshold=5.0):
+    """Rotate a padded face cutout so the face is close to upright, re-detecting
+    after each trial rotation so downstream alignment/swap gets accurate
+    landmarks instead of ones estimated from a tilted view (landmark and
+    swap-model quality both degrade the further a face is from upright).
+
+    `rough_angle` is an initial roll estimate (degrees), typically taken from
+    a detection on the *un-rotated* frame -- noisy for large tilts, and the
+    sign of "clockwise vs counter-clockwise correction" can be ambiguous
+    depending on caller conventions, so this tries the estimate in both
+    rotational directions and keeps whichever leaves the smallest residual
+    tilt, then takes one more pass to fine-tune (again trying both
+    directions, so a sign mistake anywhere in the estimate can never make
+    things worse than doing nothing). These searching/refinement trials use
+    cheap same-size rotations (rotate_image_same_size) purely to measure
+    residual roll -- their pixels are never used downstream.
+
+    Once the best total angle is found, this performs exactly ONE lossless
+    rotation (rotate_image_any, which expands the canvas so no source
+    content is clipped) and re-detects the face in that -- this is the
+    frame/face actually returned for the swap pipeline to use, and the
+    accompanying M/original_size let the caller undo the rotation later
+    with unrotate_image_any (the exact affine inverse) instead of a second
+    forward-style rotation, which would introduce black wedges.
+
+    Returns (rotated_frame, face, M, original_size, total_angle_applied), or
+    (None, None, None, None, 0.0) if the face is already upright or no
+    candidate rotation yields a usable detection (caller should fall back
+    to the un-rotated frame in that case).
+    """
+    if rough_angle is None or abs(rough_angle) < threshold:
+        return None, None, None, None, 0.0
+
+    best = None  # (abs_residual, angle, residual)
+    for candidate in (rough_angle, -rough_angle):
+        residual = _try_rotation_angle(get_first_face_fn, cutframe, candidate)
+        if residual is None:
+            continue
+        if best is None or abs(residual) < best[0]:
+            best = (abs(residual), candidate, residual)
+
+    if best is None:
+        return None, None, None, None, 0.0
+
+    _, angle, residual = best
+
+    if threshold <= abs(residual) < 45.0:
+        refined = None
+        for correction in (residual, -residual):
+            trial_angle = angle + correction
+            r_residual = _try_rotation_angle(get_first_face_fn, cutframe, trial_angle)
+            if r_residual is None:
+                continue
+            if refined is None or abs(r_residual) < abs(refined[1]):
+                refined = (trial_angle, r_residual)
+        if refined is not None and abs(refined[1]) < abs(residual):
+            angle = refined[0]
+
+    rotated, M, original_size = rotate_image_any(cutframe, angle)
+    face = get_first_face_fn(rotated)
+    if face is None or not hasattr(face, 'kps') or face.kps is None:
+        return None, None, None, None, 0.0
+
+    return rotated, face, M, original_size, angle
+
+
 # alignment code from insightface https://github.com/deepinsight/insightface/blob/master/python-package/insightface/utils/face_align.py
 
 arcface_dst = np.array(

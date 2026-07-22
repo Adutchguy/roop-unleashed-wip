@@ -830,11 +830,11 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
         if roop.globals.autorotate_faces:
             rough_angle = estimate_roll_angle(face.kps)
             x0, y0, x1, y1 = face.bbox.astype(int)
-            # An arbitrary-angle rotation needs more headroom around the face
-            # than a 90-degree snap does, so corners aren't clipped.
-            offs = int(max(x1 - x0, y1 - y0) * 0.6)
+            # Padding just needs to comfortably cover the face; rotate_image_any
+            # expands its own canvas so no content is clipped regardless.
+            offs = int(max(x1 - x0, y1 - y0) * 0.4)
             cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
-            rot, rotface, angle = find_upright_rotation(get_first_face, cut, rough_angle)
+            rot, rotface, _M, _size, angle = find_upright_rotation(get_first_face, cut, rough_angle)
             if rot is not None:
                 # Capture loop variables explicitly so the closure is correct.
                 _x0, _y0, _x1, _y1, _offs, _angle = x0, y0, x1, y1, offs, angle
@@ -842,7 +842,11 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
                              __offs=_offs, __angle=_angle):
                     c = _cutout(swp, __x0 - __offs, __y0 - __offs,
                                     __x1 + __offs, __y1 + __offs)
-                    return rotate_image_any(c, __angle)
+                    # Same box size as `cut` above -> identical forward matrix,
+                    # so this lands in the exact same rotated coordinate space
+                    # as `rot`/`rotface.kps`, with no clipped/black corners.
+                    rotated, _, _ = rotate_image_any(c, __angle)
+                    return rotated
                 return rot, rotface.kps, _swap_fn
         # No rotation — identity transform for the swap frame too.
         return frame, face.kps, lambda swp: swp

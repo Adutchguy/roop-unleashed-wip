@@ -5,7 +5,7 @@ import psutil
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, rotate_image_any, estimate_roll_angle, find_upright_rotation
+from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, unrotate_image_any, estimate_roll_angle, find_upright_rotation
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -812,7 +812,8 @@ class ProcessMgr():
         inputface = None
 
         rotation_action = None
-        rotation_angle = 0.0
+        rotation_M = None
+        rotation_orig_size = None
         if roop.globals.autorotate_faces:
             rough_angle = 0.0
             if hasattr(target_face, 'kps') and target_face.kps is not None:
@@ -820,11 +821,11 @@ class ProcessMgr():
             (startX, startY, endX, endY) = target_face["bbox"].astype("int")
             width = endX - startX
             height = endY - startY
-            # An arbitrary-angle rotation needs more headroom around the face
-            # than a 90-degree snap does, so corners aren't clipped.
-            offs = int(max(width, height) * 0.6)
+            # Padding just needs to comfortably cover the face; rotate_image_any
+            # expands its own canvas so no content is clipped regardless.
+            offs = int(max(width, height) * 0.4)
             rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
-            rotated, rotface, rotation_angle = find_upright_rotation(get_first_face, rotcutframe, rough_angle)
+            rotated, rotface, rotation_M, rotation_orig_size, _angle = find_upright_rotation(get_first_face, rotcutframe, rough_angle)
             if rotated is not None:
                 saved_frame = frame.copy()
                 frame = rotated
@@ -1146,7 +1147,7 @@ class ProcessMgr():
             result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
 
         if rotation_action is not None:
-            fake_frame = rotate_image_any(result, -rotation_angle)
+            fake_frame = unrotate_image_any(result, rotation_M, rotation_orig_size)
             result = self.paste_simple(fake_frame, saved_frame, startX, startY)
         
         return result

@@ -1168,7 +1168,36 @@ class ProcessMgr():
         end_x = start_x + src.shape[1]
         end_y = start_y + src.shape[0]
         start_x, end_x, start_y, end_y = clamp_cut_values(start_x, end_x, start_y, end_y, dest)
-        dest[start_y:end_y, start_x:end_x] = src
+        crop_w = end_x - start_x
+        crop_h = end_y - start_y
+        if crop_w <= 0 or crop_h <= 0:
+            return dest
+        src_crop = src[0:crop_h, 0:crop_w]
+
+        # Feather the border instead of a hard rectangle copy. `src` is only
+        # pixel-identical to `dest` at the very edge when it came straight
+        # from the source frame (e.g. the 90-degree rotate path, which uses
+        # exact transpose/flip -- no resampling). The continuous-angle
+        # auto-rotate path resamples the whole patch twice (forward rotate +
+        # inverse un-rotate), which very slightly blurs it relative to the
+        # untouched surrounding frame; a hard edge there shows up as a
+        # visible rectangle outline. Fading to `dest` over the outer ~12% of
+        # the patch removes that seam while the actual swapped face --
+        # comfortably inside the padded crop -- is unaffected.
+        feather = max(1, int(min(crop_w, crop_h) * 0.12))
+        if feather > 1 and crop_w > 2 * feather and crop_h > 2 * feather:
+            ramp = np.linspace(0.0, 1.0, feather, dtype=np.float32)
+            mask = np.ones((crop_h, crop_w), dtype=np.float32)
+            mask[:feather, :] *= ramp[:, None]
+            mask[-feather:, :] *= ramp[::-1][:, None]
+            mask[:, :feather] *= ramp[None, :]
+            mask[:, -feather:] *= ramp[None, ::-1]
+            mask3 = mask[:, :, np.newaxis]
+            dest_region = dest[start_y:end_y, start_x:end_x].astype(np.float32)
+            blended = src_crop.astype(np.float32) * mask3 + dest_region * (1.0 - mask3)
+            dest[start_y:end_y, start_x:end_x] = blended.astype(dest.dtype)
+        else:
+            dest[start_y:end_y, start_x:end_x] = src_crop
         return dest
 
     def simple_blend_with_mask(self, image1, image2, mask):

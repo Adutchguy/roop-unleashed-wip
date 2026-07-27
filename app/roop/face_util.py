@@ -59,6 +59,10 @@ def get_face_analyser() -> Any:
 def get_first_face(frame: Frame) -> Any:
     try:
         faces = get_face_analyser().get(frame)
+        if not faces:
+            faces = _detect_faces_with_rotation_fallback(frame)
+        if not faces:
+            return None
         return min(faces, key=lambda x: x.bbox[0])
     #   return sorted(faces, reverse=True, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))[0]
     except:
@@ -68,9 +72,102 @@ def get_first_face(frame: Frame) -> Any:
 def get_all_faces(frame: Frame) -> Any:
     try:
         faces = get_face_analyser().get(frame)
+        if not faces:
+            faces = _detect_faces_with_rotation_fallback(frame)
+        if not faces:
+            return None
         return sorted(faces, key=lambda x: x.bbox[0])
     except:
         return None
+
+
+def _remap_points_to_original(points, M):
+    """Map an array of (x, y[, ...extra cols]) points detected in the rotated
+    canvas that rotate_image_any produced back into the ORIGINAL image's
+    coordinate space, using the true affine inverse of M (the point analogue
+    of unrotate_image_any, which does this for pixels instead of points).
+    Any extra columns beyond x/y (e.g. the z of landmark_3d_68) are passed
+    through untouched -- M is a pure rotation (scale 1), so z needs no
+    rescaling.
+    """
+    M_inv = cv2.invertAffineTransform(M)
+    pts = np.asarray(points, dtype=np.float64)
+    xy = pts[:, :2]
+    ones = np.ones((xy.shape[0], 1))
+    homo = np.hstack([xy, ones])
+    remapped_xy = homo @ M_inv.T
+    if pts.shape[1] > 2:
+        out = pts.copy()
+        out[:, :2] = remapped_xy
+        return out.astype(np.float32)
+    return remapped_xy.astype(np.float32)
+
+
+def _remap_face_to_original(face, M):
+    """Rewrite a Face's bbox/kps/landmarks -- detected in the rotated canvas
+    rotate_image_any produced -- in place, so they describe the same face in
+    the coordinate space of the ORIGINAL, un-rotated frame. This lets every
+    existing caller of get_first_face/get_all_faces keep treating the
+    returned Face exactly like a normal detection on the frame it passed in;
+    none of them need to know a rotation search happened underneath.
+
+    det_score and the embedding/normed_embedding are left untouched: insightface
+    computed those from the upright (rotated) pixels, and they're already
+    correct -- likely better quality than anything computable from the
+    original tilted/upside-down pixels.
+    """
+    if hasattr(face, 'bbox') and face.bbox is not None:
+        x1, y1, x2, y2 = face.bbox
+        corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+        remapped = _remap_points_to_original(corners, M)
+        new_x1, new_y1 = remapped.min(axis=0)
+        new_x2, new_y2 = remapped.max(axis=0)
+        face["bbox"] = np.array([new_x1, new_y1, new_x2, new_y2], dtype=np.float32)
+    if hasattr(face, 'kps') and face.kps is not None:
+        face["kps"] = _remap_points_to_original(face.kps, M)
+    if hasattr(face, 'landmark_2d_106') and face.landmark_2d_106 is not None:
+        face["landmark_2d_106"] = _remap_points_to_original(face.landmark_2d_106, M)
+    if hasattr(face, 'landmark_3d_68') and face.landmark_3d_68 is not None:
+        face["landmark_3d_68"] = _remap_points_to_original(face.landmark_3d_68, M)
+    return face
+
+
+def _detect_faces_with_rotation_fallback(frame):
+    """Last-resort detection pass for when get_face_analyser().get(frame)
+    finds NOTHING. insightface's detector is trained overwhelmingly on
+    upright faces and reliably misses anything tilted much past +-45 degrees
+    -- a sideways or upside-down face in a source photo/video frame otherwise
+    detects zero faces no matter how det_thresh is tuned, forcing the user to
+    manually rotate the image before it works (the actual complaint this
+    exists to fix).
+
+    Tries all three coarse rotations (90/180/270) rather than stopping at the
+    first hit, and keeps whichever gives the strongest total detection
+    confidence -- a wrong-angle rotation can occasionally still turn up a
+    weak spurious match, so "first hit" isn't reliable enough on its own.
+
+    Faces are detected in rotate_image_any's expanded, non-clipping canvas
+    (so no part of a corner-heavy rotated face is lost), then remapped back
+    into the ORIGINAL frame's coordinate space via _remap_face_to_original
+    before being returned.
+
+    Returns a list of faces, or None if no rotation yields a detection.
+    """
+    best_faces = None
+    best_score = -1.0
+    for angle in (180, 90, 270):
+        rotated, M, _orig_size = rotate_image_any(frame, angle)
+        try:
+            faces = get_face_analyser().get(rotated)
+        except Exception:
+            faces = None
+        if not faces:
+            continue
+        score = sum(float(getattr(f, 'det_score', 0.0)) for f in faces)
+        if score > best_score:
+            best_score = score
+            best_faces = [_remap_face_to_original(f, M) for f in faces]
+    return best_faces
 
 
 def extract_face_images(source_filename, video_info, extra_padding=-1.0):

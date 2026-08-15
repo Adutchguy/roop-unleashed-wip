@@ -12,6 +12,9 @@ venv
 cache
 logs
 
+# Pinokio-managed conda environment
+.env
+
 # App runtime directories (also covered by app/.gitignore)
 app/env
 app/models

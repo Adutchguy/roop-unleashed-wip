@@ -7,6 +7,14 @@ Supports NVIDIA (CUDA / TensorRT), AMD (DirectML / ROCm), Apple Silicon, and CPU
 
 ## Installation
 
+### Option A — Pinokio (one click)
+
+[![Run on Pinokio](https://img.shields.io/badge/Run%20on-Pinokio-blueviolet)](https://pinokio.co/item.html?uri=https://github.com/Adutchguy/roop-unleashed-wip)
+
+If you have [Pinokio](https://pinokio.co) installed, open this repo as a Pinokio app (or paste the GitHub URL into Pinokio's "Download from URL" box) and click **Install**, then **Start**. Pinokio detects your GPU (NVIDIA / AMD / Apple Silicon / CPU) and installs the matching PyTorch, ONNX Runtime, and InsightFace build automatically into a self-contained environment at `.env/` — no terminal, no manual dependency matrix. Use the **Update** and **Reset** buttons in the app menu to pull updates or rebuild the environment.
+
+### Option B — Standalone (manual)
+
 ### Prerequisites
 
 | Requirement | Notes |
@@ -236,16 +244,21 @@ The Settings tab exposes all persistent options including provider, enhancer def
 
 ## Updating
 
+**Standalone:**
 ```bash
 git pull
 pip install -r app/requirements.txt
 ```
 
+**Pinokio:** click **Update** in the app menu.
+
 ---
 
 ## Resetting / Reinstalling
 
-Delete `app/env/` and recreate the virtual environment (Steps 2–4 above).
+**Standalone:** delete `app/env/` and recreate the virtual environment (Steps 2–4 above).
+
+**Pinokio:** click **Reset** in the app menu, then **Install** again. This only removes the Pinokio-managed `.env/` environment — downloaded models and saved settings under `app/` are left untouched.
 
 ---
 
@@ -291,6 +304,12 @@ roop-unleashed-wip/
 │   ├── models/             # Downloaded model weights (gitignored)
 │   ├── requirements.txt    # Python dependencies
 │   └── run.py              # Entry point
+├── pinokio.js               # Pinokio app manifest (title, icon, menu)
+├── menu.js                  # Pinokio dynamic menu (Install/Start/Update/Reset)
+├── install.js                # Pinokio installer — creates .env/ and picks the right
+│                              #   torch/onnxruntime/insightface build for the detected GPU
+├── start.js                  # Pinokio launcher — runs app/run.py, opens the Web UI
+├── update.js, reset.js       # Pinokio update/reset actions
 └── README.md               # This file
 ```
 

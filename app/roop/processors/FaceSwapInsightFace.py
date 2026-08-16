@@ -1,3 +1,4 @@
+import os
 import roop.globals
 import cv2
 import numpy as np
@@ -5,7 +6,7 @@ import onnx
 import onnxruntime
 
 from roop.typing import Face, Frame
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, create_inference_session
 
 
 
@@ -25,15 +26,26 @@ class FaceSwapInsightFace():
         self.plugin_options = plugin_options
         if self.model_swap_insightface is None:
             model_path = resolve_relative_path('../models/inswapper_128.onnx')
-            graph = onnx.load(model_path).graph
-            self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
+            # emap is a small (512x512) weight pulled out of inswapper_128.onnx's
+            # graph. Parsing the full ~550MB protobuf with onnx.load() just for
+            # this array is redundant with the parses onnxruntime/TensorRT already
+            # do to load the same model (and triggers libprotobuf's "dangerously
+            # large protocol message" warning every launch). Cache it once so
+            # later launches skip straight to the .npy file.
+            emap_cache_path = resolve_relative_path('../models/inswapper_128_emap.npy')
+            if os.path.exists(emap_cache_path):
+                self.emap = np.load(emap_cache_path)
+            else:
+                graph = onnx.load(model_path).graph
+                self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
+                np.save(emap_cache_path, self.emap)
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
             self.input_mean = 0.0
             self.input_std = 255.0
             #cuda_options = {"arena_extend_strategy": "kSameAsRequested", 'cudnn_conv_algo_search': 'DEFAULT'}            
             sess_options = onnxruntime.SessionOptions()
             sess_options.enable_cpu_mem_arena = False
-            self.model_swap_insightface = onnxruntime.InferenceSession(model_path, sess_options, providers=roop.globals.execution_providers)
+            self.model_swap_insightface = create_inference_session(model_path, sess_options, roop.globals.execution_providers)
 
 
 

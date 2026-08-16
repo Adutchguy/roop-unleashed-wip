@@ -5,7 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
-from roop.utilities import resolve_relative_path, conditional_download
+from roop.utilities import resolve_relative_path, conditional_download, create_inference_session
 
 class Enhance_RestoreFormerPPlus():
     plugin_options:dict = None
@@ -28,7 +28,7 @@ class Enhance_RestoreFormerPPlus():
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
             conditional_download(resolve_relative_path('../models'), ['https://huggingface.co/countfloyd/deepfake/resolve/main/restoreformer_plus_plus.onnx'])
             model_path = resolve_relative_path('../models/restoreformer_plus_plus.onnx')
-            self.model_restoreformerpplus = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+            self.model_restoreformerpplus = create_inference_session(model_path, None, roop.globals.execution_providers)
             self.model_inputs = self.model_restoreformerpplus.get_inputs()
             model_outputs = self.model_restoreformerpplus.get_outputs()
             self.io_binding = self.model_restoreformerpplus.io_binding()

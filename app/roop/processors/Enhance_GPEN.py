@@ -5,7 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, create_inference_session
 
 
 class Enhance_GPEN():
@@ -27,7 +27,7 @@ class Enhance_GPEN():
         self.plugin_options = plugin_options
         if self.model_gpen is None:
             model_path = resolve_relative_path('../models/GPEN-BFR-512.onnx')
-            self.model_gpen = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+            self.model_gpen = create_inference_session(model_path, None, roop.globals.execution_providers)
             # replace Mac mps with cpu for the moment
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
 

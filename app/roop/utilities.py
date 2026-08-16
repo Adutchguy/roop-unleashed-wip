@@ -447,6 +447,38 @@ def resolve_relative_path(path: str) -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), path))
 
 
+def create_inference_session(model_path: str, sess_options, providers) -> Any:
+    """Thin wrapper around onnxruntime.InferenceSession that logs when the
+    TensorRT execution provider is compiling a fresh engine for a model.
+    First use per model/resolution can take several minutes (see README.md
+    TensorRT notes); after that, engines are cached in app/models/trt_cache/
+    and load in a couple seconds. Without this, that wait looks identical to
+    a hang in the terminal.
+    """
+    import time
+    import onnxruntime
+
+    provider_names = [p[0] if isinstance(p, tuple) else p for p in providers]
+    using_trt = 'TensorrtExecutionProvider' in provider_names
+    model_name = os.path.basename(model_path)
+
+    if using_trt:
+        print(f"[TensorRT] Preparing '{model_name}' — if no cached engine exists yet, this can take "
+              f"several minutes to compile. Cached afterward in app/models/trt_cache/, please wait...")
+
+    start = time.time()
+    session = onnxruntime.InferenceSession(model_path, sess_options, providers=providers)
+    elapsed = time.time() - start
+
+    if using_trt:
+        if elapsed > 10:
+            print(f"[TensorRT] '{model_name}' engine compiled in {elapsed:.0f}s — cached for future runs.")
+        else:
+            print(f"[TensorRT] '{model_name}' loaded from cached engine ({elapsed:.1f}s).")
+
+    return session
+
+
 def get_device() -> str:
     import onnxruntime as ort
     available_providers = ort.get_available_providers()

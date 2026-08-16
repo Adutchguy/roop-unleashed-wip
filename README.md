@@ -11,7 +11,7 @@ Supports NVIDIA (CUDA / TensorRT), AMD (DirectML / ROCm), Apple Silicon, and CPU
 
 [![Run on Pinokio](https://img.shields.io/badge/Run%20on-Pinokio-blueviolet)](https://pinokio.co/item.html?uri=https://github.com/Adutchguy/roop-unleashed-wip)
 
-If you have [Pinokio](https://pinokio.co) installed, open this repo as a Pinokio app (or paste the GitHub URL into Pinokio's "Download from URL" box) and click **Install**, then **Start**. Pinokio detects your GPU (NVIDIA / AMD / Apple Silicon / CPU) and installs the matching PyTorch, ONNX Runtime, and InsightFace build automatically into a self-contained environment at `.env/` — no terminal, no manual dependency matrix. Use the **Update** and **Reset** buttons in the app menu to pull updates or rebuild the environment.
+If you have [Pinokio](https://pinokio.co) installed, open this repo as a Pinokio app (or paste the GitHub URL into Pinokio's "Download from URL" box) and click **Install**, then **Start**. Pinokio detects your GPU (NVIDIA / AMD / Apple Silicon / CPU) and installs the matching PyTorch, ONNX Runtime, and InsightFace build automatically into a self-contained environment at `.env/` — no terminal, no manual dependency matrix. For NVIDIA GPUs, TensorRT is installed automatically too (Step 5 below is only needed for standalone installs) — just open the Settings tab and change **Provider** to `tensorrt` to use it. Use the **Update** and **Reset** buttons in the app menu to pull updates or rebuild the environment.
 
 ### Option B — Standalone (manual)
 

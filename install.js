@@ -38,6 +38,15 @@ function torchStep(kernel) {
 	return 'pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cpu --force-reinstall --no-deps';
 }
 
+// TensorRT is optional acceleration for NVIDIA GPUs, selectable in the app's
+// own Settings tab (Provider: tensorrt). onnxruntime-gpu==1.19.0 requires
+// TensorRT 10.2 specifically (see https://onnxruntime.ai/docs/execution-providers/TensorRT-ExecutionProvider.html#requirements) —
+// without it, roop/core.py's own `import tensorrt` probe fails and the app
+// silently falls back to plain CUDA even if TensorRT is selected.
+function tensorrtStep(kernel) {
+	return 'pip install tensorrt-cu12==10.2.0';
+}
+
 function onnxruntimeStep(kernel) {
 	const { platform, gpu } = kernel;
 
@@ -165,6 +174,23 @@ module.exports = async kernel => {
 				method: 'shell.run',
 				params: {
 					message: onnxruntimeStep(kernel),
+					path: 'app',
+					conda: {
+						path: envPath
+					},
+					on: [{
+						event: '/error:/i',
+						break: false
+					}]
+				}
+			},
+			{
+				// makes the "tensorrt" provider in the app's Settings tab actually
+				// work instead of silently falling back to CUDA (see tensorrtStep above)
+				when: '{{ gpu === "nvidia" }}',
+				method: 'shell.run',
+				params: {
+					message: tensorrtStep(kernel),
 					path: 'app',
 					conda: {
 						path: envPath

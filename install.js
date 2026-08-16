@@ -10,10 +10,11 @@ const envPath = path.resolve(__dirname, '.env');
 // build in requirements.txt succeeds on its own.
 function insightfaceStep(kernel) {
 	if (kernel.platform === 'win32') {
-		// C0untFloyd/roop-unleashed (the original wheel host) was disabled by GitHub,
-		// so this pulls the same prebuilt cp310 wheel from Gourieff/Assets instead —
-		// a maintained mirror used by other Windows face-swap installers.
-		return 'pip install https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl';
+		// insightface==0.7.3 has no PyPI wheel for Windows, and its original wheel
+		// host (C0untFloyd/roop-unleashed) was disabled by GitHub. Rather than
+		// depend on another external mirror that could disappear the same way,
+		// the wheel is vendored in-repo at app/vendor/.
+		return 'pip install vendor/insightface-0.7.3-cp310-cp310-win_amd64.whl';
 	}
 	return 'pip install cython==0.29.36';
 }

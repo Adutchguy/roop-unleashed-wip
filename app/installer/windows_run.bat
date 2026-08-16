@@ -16,8 +16,6 @@ set INSTALL_ENV_DIR=%cd%\installer_files\env
 set MINICONDA_DOWNLOAD_URL=https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe
 set FFMPEG_DOWNLOAD_URL=https://github.com/GyanD/codexffmpeg/releases/download/2023-06-21-git-1bcb8a7338/ffmpeg-2023-06-21-git-1bcb8a7338-essentials_build.zip
 set INSTALL_FFMPEG_DIR=%cd%\installer_files\ffmpeg
-set INSIGHTFACE_PACKAGE_URL=https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl
-set INSIGHTFACE_PACKAGE_PATH=%INSTALL_DIR%\insightface-0.7.3-cp310-cp310-win_amd64.whl
 
 set conda_exists=F
 set ffmpeg_exists=F
@@ -56,12 +54,9 @@ if not exist "%INSTALL_ENV_DIR%" (
     if not exist "%INSTALL_ENV_DIR%\python.exe" ( echo. && echo ERROR: Conda environment is empty. && goto end )
     @rem activate installer env
     call "%CONDA_ROOT_PREFIX%\condabin\conda.bat" activate "%INSTALL_ENV_DIR%" || ( echo. && echo ERROR: Miniconda hook not found. && goto end )
-    @rem Download insightface package
-    echo Downloading insightface package from %INSIGHTFACE_PACKAGE_URL% to %INSIGHTFACE_PACKAGE_PATH%
-    call curl -Lk "%INSIGHTFACE_PACKAGE_URL%" > "%INSIGHTFACE_PACKAGE_PATH%" || ( echo. && echo ERROR: Insightface package failed to download. && goto end )
-    @rem install insightface package using pip
-    echo Installing insightface package
-    call pip install "%INSIGHTFACE_PACKAGE_PATH%" || ( echo. && echo ERROR: Insightface package installation failed. && goto end )
+    @rem insightface's Windows wheel is vendored in-repo (app\vendor\) and
+    @rem installed by installer.py right after it clones the repo, so nothing
+    @rem to download here.
 )
 
 @rem Download and install FFmpeg if not already installed

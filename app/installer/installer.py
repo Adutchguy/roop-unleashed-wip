@@ -36,6 +36,13 @@ def install_dependencies():
     run_cmd("git clone https://github.com/Adutchguy/roop-unleashed-wip.git " + MY_PATH)
     # requirements.txt / run.py live under app/, not the repo root
     os.chdir(APP_PATH)
+    # insightface==0.7.3 has no PyPI wheel for Windows; install the wheel
+    # vendored in-repo at app/vendor/ before requirements.txt pulls it in,
+    # so pip sees it already satisfied instead of trying (and failing) to
+    # build it from source.
+    if sys.platform == "win32":
+        vendored_wheel = os.path.join("vendor", "insightface-0.7.3-cp310-cp310-win_amd64.whl")
+        run_cmd(f"python -m pip install {vendored_wheel}")
     run_cmd("python -m pip install -r requirements.txt")
 
 

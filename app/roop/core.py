@@ -11,6 +11,7 @@ import warnings
 from typing import List
 import platform
 import signal
+import threading
 import torch
 
 try:
@@ -46,6 +47,13 @@ call_display_ui = None
 
 process_mgr = None
 _preview_process_mgr = None   # dedicated instance for live_swap — never shared with batch
+# Guards _preview_process_mgr against a race between live_swap() (Gradio runs each
+# preview-frame-changed callback in its own worker thread) and release_resources()
+# (called the instant a batch run starts, e.g. clicking Start). Without this, a
+# preview callback that's already past its "is it None?" check can still have the
+# global nulled out from under it before its next use, raising
+# "AttributeError: 'NoneType' object has no attribute 'process_frame'".
+_preview_lock = threading.Lock()
 
 
 if 'ROCMExecutionProvider' in roop.globals.execution_providers:
@@ -142,9 +150,10 @@ def release_resources() -> None:
     if process_mgr is not None:
         process_mgr.release_resources()
         process_mgr = None
-    if _preview_process_mgr is not None:
-        _preview_process_mgr.release_resources()
-        _preview_process_mgr = None
+    with _preview_lock:
+        if _preview_process_mgr is not None:
+            _preview_process_mgr.release_resources()
+            _preview_process_mgr = None
 
     gc.collect()
     if torch is not None:
@@ -238,11 +247,12 @@ def live_swap(frame, options):
     if frame is None:
         return frame
 
-    if _preview_process_mgr is None:
-        _preview_process_mgr = ProcessMgr(None)
+    with _preview_lock:
+        if _preview_process_mgr is None:
+            _preview_process_mgr = ProcessMgr(None)
 
-    _preview_process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
-    newframe = _preview_process_mgr.process_frame(frame)
+        _preview_process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+        newframe = _preview_process_mgr.process_frame(frame)
     if newframe is None:
         return frame
     return newframe

@@ -13,6 +13,7 @@ from math import sqrt
 from torchvision.transforms.functional import normalize
 
 from roop.typing import Face, Frame, FaceSet
+from roop.utilities import resolve_relative_path, conditional_download
 
 
 THREAD_LOCK_DMDNET = threading.Lock()
@@ -200,9 +201,10 @@ class Enhance_DMDNet():
     
 
     def create(self, devicename):
+        conditional_download(resolve_relative_path('../models'), ['https://github.com/csxmli2016/DMDNet/releases/download/v1/DMDNet.pth'])
         self.torchdevice = torch.device(devicename)
         model_dmdnet = DMDNet().to(self.torchdevice)
-        weights = torch.load('./models/DMDNet.pth') 
+        weights = torch.load('./models/DMDNet.pth')
         model_dmdnet.load_state_dict(weights, strict=True)
 
         model_dmdnet.eval()

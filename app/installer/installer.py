@@ -29,34 +29,34 @@ def check_env():
 
 
 def install_dependencies():
-    global MY_PATH
+    global MY_PATH, APP_PATH
 
     # Install Git and clone repo
     run_cmd("conda install -y -k git")
-    run_cmd("git clone https://github.com/C0untFloyd/roop-unleashed.git")
-    os.chdir(MY_PATH)
-    run_cmd("git checkout 126fd699c35166772fd60dc6cbe5b0762c9967a1")
-    # Installs dependencies from requirements.txt
+    run_cmd("git clone https://github.com/Adutchguy/roop-unleashed-wip.git " + MY_PATH)
+    # requirements.txt / run.py live under app/, not the repo root
+    os.chdir(APP_PATH)
     run_cmd("python -m pip install -r requirements.txt")
 
 
 
 def update_dependencies():
-    global MY_PATH
-    
+    global MY_PATH, APP_PATH
+
     os.chdir(MY_PATH)
 	# do a hard reset for to update even if there are local changes
     run_cmd("git fetch --all")
-    run_cmd("git reset --hard origin/main")
+    run_cmd("git reset --hard origin/master")
     run_cmd("git pull")
     # Installs/Updates dependencies from all requirements.txt
+    os.chdir(APP_PATH)
     run_cmd("python -m pip install -r requirements.txt")
 
 
 def start_app():
-    global MY_PATH
-    
-    os.chdir(MY_PATH)
+    global APP_PATH
+
+    os.chdir(APP_PATH)
     # forward commandline arguments
     sys.argv.pop(0)
     args = ' '.join(sys.argv)
@@ -65,11 +65,11 @@ def start_app():
 
 
 if __name__ == "__main__":
-    global MY_PATH
-    
-    MY_PATH = "roop-unleashed"
+    global MY_PATH, APP_PATH
 
-    
+    MY_PATH = "roop-unleashed-wip"
+    APP_PATH = os.path.join(script_dir, MY_PATH, "app")
+
     # Verifies we are in a conda environment
     check_env()
 

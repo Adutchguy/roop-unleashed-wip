@@ -55,19 +55,18 @@ else
 fi
 
 # Clone the repository
-REPO_URL="https://github.com/C0untFloyd/roop-unleashed.git"
-REPO_NAME="roop-unleashed"
+REPO_URL="https://github.com/Adutchguy/roop-unleashed-wip.git"
+REPO_NAME="roop-unleashed-wip"
 
 echo "Cloning the repository $REPO_URL..."
 git clone $REPO_URL
 
 # Check if the repository was cloned successfully
 if [ -d "$REPO_NAME" ]; then
-    echo "Repository cloned successfully. Changing into directory $REPO_NAME..."
-    cd "$REPO_NAME"
+    echo "Repository cloned successfully. Changing into directory $REPO_NAME/app..."
+    cd "$REPO_NAME/app"
+    echo "Check and installation process completed. Run 'sh runMacOS.sh' from here to finish setup and launch."
 else
     echo "Failed to clone the repository."
 fi
-
-echo "Check and installation process completed."
 

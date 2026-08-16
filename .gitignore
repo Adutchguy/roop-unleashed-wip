@@ -12,6 +12,9 @@ venv
 cache
 logs
 
+# Exported Pinokio debug logs (dropped at repo root for troubleshooting)
+/*logs*.zip
+
 # Pinokio-managed conda environment
 .env
 

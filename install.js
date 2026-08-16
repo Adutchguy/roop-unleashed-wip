@@ -121,7 +121,16 @@ module.exports = async kernel => {
 					path: 'app',
 					conda: {
 						path: envPath
-					}
+					},
+					// pip's dependency-resolver notices ("ERROR: pip's dependency
+					// resolver does not currently take into account...") print the
+					// word "error" without actually failing the install. Without this,
+					// Pinokio's default error-detection kills the whole script here and
+					// every step after it silently never runs.
+					on: [{
+						event: '/error:/i',
+						break: false
+					}]
 				}
 			},
 			{
@@ -131,7 +140,11 @@ module.exports = async kernel => {
 					path: 'app',
 					conda: {
 						path: envPath
-					}
+					},
+					on: [{
+						event: '/error:/i',
+						break: false
+					}]
 				}
 			},
 			{
@@ -141,7 +154,11 @@ module.exports = async kernel => {
 					path: 'app',
 					conda: {
 						path: envPath
-					}
+					},
+					on: [{
+						event: '/error:/i',
+						break: false
+					}]
 				}
 			},
 			{
@@ -151,7 +168,11 @@ module.exports = async kernel => {
 					path: 'app',
 					conda: {
 						path: envPath
-					}
+					},
+					on: [{
+						event: '/error:/i',
+						break: false
+					}]
 				}
 			},
 			{

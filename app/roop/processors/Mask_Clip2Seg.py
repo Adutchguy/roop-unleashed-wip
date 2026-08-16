@@ -7,6 +7,7 @@ from clip.clipseg import CLIPDensePredT
 import numpy as np
 
 from roop.typing import Frame
+from roop.utilities import resolve_relative_path, conditional_download
 
 THREAD_LOCK_CLIP = threading.Lock()
 
@@ -26,6 +27,7 @@ class Mask_Clip2Seg():
 
         self.plugin_options = plugin_options
         if self.model_clip is None:
+            conditional_download(resolve_relative_path('../models/CLIP'), ['https://huggingface.co/countfloyd/deepfake/resolve/main/rd64-uni-refined.pth'])
             self.model_clip = CLIPDensePredT(version='ViT-B/16', reduce_dim=64, complex_trans_conv=True)
             self.model_clip.eval();
             self.model_clip.load_state_dict(torch.load('models/CLIP/rd64-uni-refined.pth', map_location=torch.device('cpu')), strict=False)

@@ -142,10 +142,7 @@ class ProcessMgr():
         'dmdnet'            : 'Enhance_DMDNet',
         'gpen'              : 'Enhance_GPEN',
         'restoreformer++'   : 'Enhance_RestoreFormerPPlus',
-        'colorizer'         : 'Frame_Colorizer',
         'filter_generic'    : 'Frame_Filter',
-        'removebg'          : 'Frame_Masking',
-        'upscale'           : 'Frame_Upscale'
     }
 
     def __init__(self, progress):

@@ -5,7 +5,7 @@ import onnxruntime
 import roop.globals
 
 from roop.typing import Face, Frame, FaceSet
-from roop.utilities import resolve_relative_path
+from roop.utilities import resolve_relative_path, conditional_download
 
 
 # THREAD_LOCK = threading.Lock()
@@ -29,6 +29,7 @@ class Enhance_GFPGAN():
 
         self.plugin_options = plugin_options
         if self.model_gfpgan is None:
+            conditional_download(resolve_relative_path('../models'), ['https://huggingface.co/countfloyd/deepfake/resolve/main/GFPGANv1.4.onnx'])
             model_path = resolve_relative_path('../models/GFPGANv1.4.onnx')
             self.model_gfpgan = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
             # replace Mac mps with cpu for the moment

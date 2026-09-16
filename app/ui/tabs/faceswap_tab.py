@@ -1077,7 +1077,71 @@ MASKING_HEAD_JS = """
      detected target face.  Pre-loaded when the modal opens. */
   var _allTargetCrops = [];
 
-  /* ── Public: called by the Gradio button click (fn=None, js="...") ── */
+  /* ──────────────────────── Preview image download filename ──────────────────────── */
+  /* Gradio's own DownloadLink component owns the click on the "Preview
+     Image" toolbar's download button (#roop_preview_image): it reads its
+     `download` prop from internal Svelte state, not from the DOM attribute,
+     so mutating the attribute alone (an earlier version of this code) had
+     no effect — Gradio's own handler still saved as "image.png"/etc.
+     Instead we fully take over the click: cancel it before Gradio's own
+     listener runs (capture phase + stopImmediatePropagation), fetch the
+     same image URL ourselves, and save the resulting blob under a local
+     timestamp filename (YYYY-MM-DD_HH-MM-SS, seconds precision), keeping
+     whatever extension Gradio had set. Event-delegated on `document` so it
+     keeps working across preview re-renders. */
+  function _previewDownloadExt(a) {
+    try {
+      var d = a.getAttribute('download') || '';
+      var m = d.match(/\.([a-zA-Z0-9]+)$/);
+      if (m) return m[1];
+      var href = a.getAttribute('href') || '';
+      var m2 = href.match(/\.([a-zA-Z0-9]+)(?:[?#]|$)/);
+      if (m2) return m2[1];
+    } catch (e) {}
+    return 'png';
+  }
+
+  function _timestampFilename(ext) {
+    var d = new Date();
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '_' +
+           pad(d.getHours()) + '-' + pad(d.getMinutes()) + '-' + pad(d.getSeconds()) + '.' + ext;
+  }
+
+  document.addEventListener('click', function(e) {
+    var a = e.target && e.target.closest ? e.target.closest('#roop_preview_image a[download]') : null;
+    if (!a) return;
+    var href = a.getAttribute('href');
+    if (!href) return;
+    /* Cancel Gradio's own handler outright so it never runs, then do the
+       save ourselves — this is what actually controls the saved filename. */
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    var filename = _timestampFilename(_previewDownloadExt(a));
+    fetch(href, { credentials: 'same-origin' })
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('preview image fetch failed: ' + resp.status);
+        return resp.blob();
+      })
+      .then(function(blob) {
+        var blobUrl = URL.createObjectURL(blob);
+        var tmp = document.createElement('a');
+        tmp.href = blobUrl;
+        tmp.download = filename;
+        document.body.appendChild(tmp);
+        tmp.click();
+        document.body.removeChild(tmp);
+        setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 4000);
+      })
+      .catch(function(err) {
+        /* Fetch failed for some reason — fall back to the original resource
+           so the user still gets the image, even without the renamed file. */
+        console.warn('Preview image download rename failed, opening original:', err);
+        window.open(href, '_blank');
+      });
+  }, true);
+
+  /* ──────────────────────── Public: called by the Gradio button click (fn=None, js="...") ──────────────────────── */
   window.maskToggle = function() {
     var modal = document.getElementById('roop-mask-modal');
     if (modal) { _closeModal(false); } else { _targetStoreId = 'mask_json_store'; _openModal(); }

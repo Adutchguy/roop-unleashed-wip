@@ -1078,13 +1078,17 @@ MASKING_HEAD_JS = """
   var _allTargetCrops = [];
 
   /* ──────────────────────── Preview image download filename ──────────────────────── */
-  /* The built-in Gradio download button on the "Preview Image" component
-     (#roop_preview_image) normally saves with a generic/hash-based name.
-     Rewrite the anchor's `download` attribute to a local timestamp
-     (YYYY-MM-DD_HH-MM-SS, seconds precision) right before the browser
-     acts on the click, preserving whatever extension Gradio set. Uses
-     event delegation on `document` (capture phase) so it keeps working
-     across re-renders of the preview image / its toolbar. */
+  /* Gradio's own DownloadLink component owns the click on the "Preview
+     Image" toolbar's download button (#roop_preview_image): it reads its
+     `download` prop from internal Svelte state, not from the DOM attribute,
+     so mutating the attribute alone (an earlier version of this code) had
+     no effect — Gradio's own handler still saved as "image.png"/etc.
+     Instead we fully take over the click: cancel it before Gradio's own
+     listener runs (capture phase + stopImmediatePropagation), fetch the
+     same image URL ourselves, and save the resulting blob under a local
+     timestamp filename (YYYY-MM-DD_HH-MM-SS, seconds precision), keeping
+     whatever extension Gradio had set. Event-delegated on `document` so it
+     keeps working across preview re-renders. */
   function _previewDownloadExt(a) {
     try {
       var d = a.getAttribute('download') || '';
@@ -1107,7 +1111,34 @@ MASKING_HEAD_JS = """
   document.addEventListener('click', function(e) {
     var a = e.target && e.target.closest ? e.target.closest('#roop_preview_image a[download]') : null;
     if (!a) return;
-    a.setAttribute('download', _timestampFilename(_previewDownloadExt(a)));
+    var href = a.getAttribute('href');
+    if (!href) return;
+    /* Cancel Gradio's own handler outright so it never runs, then do the
+       save ourselves — this is what actually controls the saved filename. */
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    var filename = _timestampFilename(_previewDownloadExt(a));
+    fetch(href, { credentials: 'same-origin' })
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('preview image fetch failed: ' + resp.status);
+        return resp.blob();
+      })
+      .then(function(blob) {
+        var blobUrl = URL.createObjectURL(blob);
+        var tmp = document.createElement('a');
+        tmp.href = blobUrl;
+        tmp.download = filename;
+        document.body.appendChild(tmp);
+        tmp.click();
+        document.body.removeChild(tmp);
+        setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 4000);
+      })
+      .catch(function(err) {
+        /* Fetch failed for some reason — fall back to the original resource
+           so the user still gets the image, even without the renamed file. */
+        console.warn('Preview image download rename failed, opening original:', err);
+        window.open(href, '_blank');
+      });
   }, true);
 
   /* ──────────────────────── Public: called by the Gradio button click (fn=None, js="...") ──────────────────────── */

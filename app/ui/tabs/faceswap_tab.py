@@ -1077,7 +1077,40 @@ MASKING_HEAD_JS = """
      detected target face.  Pre-loaded when the modal opens. */
   var _allTargetCrops = [];
 
-  /* ── Public: called by the Gradio button click (fn=None, js="...") ── */
+  /* ──────────────────────── Preview image download filename ──────────────────────── */
+  /* The built-in Gradio download button on the "Preview Image" component
+     (#roop_preview_image) normally saves with a generic/hash-based name.
+     Rewrite the anchor's `download` attribute to a local timestamp
+     (YYYY-MM-DD_HH-MM-SS, seconds precision) right before the browser
+     acts on the click, preserving whatever extension Gradio set. Uses
+     event delegation on `document` (capture phase) so it keeps working
+     across re-renders of the preview image / its toolbar. */
+  function _previewDownloadExt(a) {
+    try {
+      var d = a.getAttribute('download') || '';
+      var m = d.match(/\.([a-zA-Z0-9]+)$/);
+      if (m) return m[1];
+      var href = a.getAttribute('href') || '';
+      var m2 = href.match(/\.([a-zA-Z0-9]+)(?:[?#]|$)/);
+      if (m2) return m2[1];
+    } catch (e) {}
+    return 'png';
+  }
+
+  function _timestampFilename(ext) {
+    var d = new Date();
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '_' +
+           pad(d.getHours()) + '-' + pad(d.getMinutes()) + '-' + pad(d.getSeconds()) + '.' + ext;
+  }
+
+  document.addEventListener('click', function(e) {
+    var a = e.target && e.target.closest ? e.target.closest('#roop_preview_image a[download]') : null;
+    if (!a) return;
+    a.setAttribute('download', _timestampFilename(_previewDownloadExt(a)));
+  }, true);
+
+  /* ──────────────────────── Public: called by the Gradio button click (fn=None, js="...") ──────────────────────── */
   window.maskToggle = function() {
     var modal = document.getElementById('roop-mask-modal');
     if (modal) { _closeModal(false); } else { _targetStoreId = 'mask_json_store'; _openModal(); }

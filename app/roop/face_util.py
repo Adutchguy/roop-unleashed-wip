@@ -73,6 +73,188 @@ def get_all_faces(frame: Frame) -> Any:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Orientation-robust detection
+#
+# The face detector (and the landmark / recognition models downstream of it)
+# are NOT rotation invariant.  A face lying on its side or upside down is
+# detected with low confidence, with garbage landmarks, or not at all -- so
+# anything that only "corrects" rotation AFTER a plain detection (the old
+# behaviour) is working from the worst possible measurements.  Manually
+# rotating the media first works so much better because the detector then
+# sees an upright face.
+#
+# get_all_faces_any_orientation() reproduces that automatically: it runs the
+# (cheap) detector on the frame rotated by 0/90/180/270 degrees, keeps the
+# view in which each face looks most upright, runs the expensive models
+# (landmarks, embedding, ...) only on that upright view, and maps every
+# coordinate back into the ORIGINAL frame.  Any face is therefore within 45
+# degrees of upright in at least one view, whatever angle it is at and
+# whatever it did on the previous frame (no temporal state is needed).
+# ---------------------------------------------------------------------------
+_ORIENT_EXTRA_MIN_SCORE = 0.6    # stricter confidence for the 90/180/270 views
+_ORIENT_MAX_VIEW_ROLL = 70.0     # reject 90/180/270 hits that still look sideways
+_ORIENT_ROLL_PENALTY = 0.3       # quality = det_score - penalty * |roll|/90
+_ORIENT_NMS_IOU = 0.3
+
+
+def rotate_image_k90(image, k):
+    """Lossless rotation by k * 90 degrees counter-clockwise (pure pixel moves)."""
+    k = int(k) % 4
+    if k == 0:
+        return image
+    return np.ascontiguousarray(np.rot90(image, k))
+
+
+def _unrotate_points_k90(pts, k, orig_w, orig_h):
+    """Map points (N, >=2) from an image that was rotated by k * 90 degrees CCW
+    back into the coordinate space of the original (orig_w x orig_h) image.
+    Extra columns (e.g. the z of 3D landmarks) are passed through untouched."""
+    out = np.array(pts, dtype=np.float32, copy=True)
+    k = int(k) % 4
+    if k == 0:
+        return out
+    x = out[:, 0].copy()
+    y = out[:, 1].copy()
+    if k == 1:
+        out[:, 0] = orig_w - 1 - y
+        out[:, 1] = x
+    elif k == 2:
+        out[:, 0] = orig_w - 1 - x
+        out[:, 1] = orig_h - 1 - y
+    else:
+        out[:, 0] = y
+        out[:, 1] = orig_h - 1 - x
+    return out
+
+
+def _unrotate_bbox_k90(bbox, k, orig_w, orig_h):
+    pts = _unrotate_points_k90(np.array([[bbox[0], bbox[1]], [bbox[2], bbox[3]]]), k, orig_w, orig_h)
+    return np.array([pts[:, 0].min(), pts[:, 1].min(), pts[:, 0].max(), pts[:, 1].max()], dtype=np.float32)
+
+
+def _unrotate_face_k90(face, k, orig_w, orig_h):
+    """In-place: express every spatial attribute of `face` in original-frame
+    coordinates.  Embedding / gender / age are rotation independent."""
+    face.bbox = _unrotate_bbox_k90(face.bbox, k, orig_w, orig_h)
+    if face.kps is not None:
+        face.kps = _unrotate_points_k90(face.kps, k, orig_w, orig_h)
+    if getattr(face, 'landmark_2d_106', None) is not None:
+        face.landmark_2d_106 = _unrotate_points_k90(face.landmark_2d_106, k, orig_w, orig_h)
+    if getattr(face, 'landmark_3d_68', None) is not None:
+        face.landmark_3d_68 = _unrotate_points_k90(face.landmark_3d_68, k, orig_w, orig_h)
+    return face
+
+
+def _boxes_overlap(a, b):
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return False
+    inter = iw * ih
+    area_a = max(1e-6, (a[2] - a[0]) * (a[3] - a[1]))
+    area_b = max(1e-6, (b[2] - b[0]) * (b[3] - b[1]))
+    iou = inter / (area_a + area_b - inter)
+    return iou > _ORIENT_NMS_IOU or inter / min(area_a, area_b) > 0.6
+
+
+def get_all_faces_any_orientation(frame: Frame) -> Any:
+    """Like get_all_faces(), but finds faces at ANY in-plane angle.
+
+    Returned Face objects are in original-frame coordinates (bbox, kps,
+    landmark_2d_106, landmark_3d_68) but their landmarks / embedding were
+    computed on the view in which the face is closest to upright, so they are
+    as accurate as if the media had been rotated by hand beforehand.
+    """
+    try:
+        if frame is None:
+            return None
+        analyser = get_face_analyser()
+        det_model = getattr(analyser, 'det_model', None)
+        if det_model is None:
+            return get_all_faces(frame)
+
+        from insightface.app.common import Face as InsightFace
+
+        h, w = frame.shape[:2]
+        det_thresh = float(getattr(roop.globals, 'det_score_threshold', 0.5))
+        views = {}
+        cands = []
+        for k in range(4):
+            img = rotate_image_k90(frame, k)
+            views[k] = img
+            bboxes, kpss = det_model.detect(img, max_num=0, metric='default')
+            if bboxes is None or bboxes.shape[0] == 0:
+                continue
+            for i in range(bboxes.shape[0]):
+                score = float(bboxes[i, 4])
+                kps_r = None if kpss is None else np.array(kpss[i], dtype=np.float32)
+                roll = 0.0
+                if kps_r is not None:
+                    roll = estimate_roll_angle(kps_r)
+                if k != 0:
+                    # Sideways views are only trusted when the face really
+                    # looks upright in them and the detector is confident.
+                    if kps_r is None or score < max(det_thresh, _ORIENT_EXTRA_MIN_SCORE):
+                        continue
+                    if abs(roll) > _ORIENT_MAX_VIEW_ROLL:
+                        continue
+                quality = score - _ORIENT_ROLL_PENALTY * min(abs(roll), 90.0) / 90.0
+                cands.append({
+                    'k': k,
+                    'score': score,
+                    'quality': quality,
+                    'bbox_r': np.array(bboxes[i, 0:4], dtype=np.float32),
+                    'bbox': _unrotate_bbox_k90(bboxes[i, 0:4], k, w, h),
+                    'kps_r': kps_r,
+                })
+
+        cands.sort(key=lambda c: c['quality'], reverse=True)
+        kept = []
+        for c in cands:
+            if any(_boxes_overlap(c['bbox'], kc['bbox']) for kc in kept):
+                continue
+            kept.append(c)
+
+        faces = []
+        for c in kept:
+            k = c['k']
+            face = InsightFace(bbox=c['bbox_r'], kps=c['kps_r'], det_score=c['score'])
+            for taskname, model in analyser.models.items():
+                if taskname == 'detection':
+                    continue
+                model.get(views[k], face)
+            if k:
+                _unrotate_face_k90(face, k, w, h)
+            faces.append(face)
+        views.clear()
+        return sorted(faces, key=lambda x: x.bbox[0])
+    except Exception:
+        return None
+
+
+def get_first_face_any_orientation(frame: Frame) -> Any:
+    try:
+        faces = get_all_faces_any_orientation(frame)
+        return min(faces, key=lambda x: x.bbox[0])
+    except Exception:
+        return None
+
+
+def get_all_faces_auto(frame: Frame) -> Any:
+    """get_all_faces(), upgraded to any-orientation detection when the
+    'Auto rotate tilted Faces' option is on."""
+    if getattr(roop.globals, 'autorotate_faces', False):
+        return get_all_faces_any_orientation(frame)
+    return get_all_faces(frame)
+
+
+def get_first_face_auto(frame: Frame) -> Any:
+    if getattr(roop.globals, 'autorotate_faces', False):
+        return get_first_face_any_orientation(frame)
+    return get_first_face(frame)
+
+
 def extract_face_images(source_filename, video_info, extra_padding=-1.0):
     face_data = []
     source_image = None
@@ -225,10 +407,34 @@ def rotate_image_same_size(image, angle_degrees):
     return cv2.warpAffine(image, M, (w, h), borderValue=0.0)
 
 
+def _snap_quarter_turns(angle_degrees, tol=0.5):
+    """k (0..3) if `angle_degrees` is within `tol` of a multiple of 90, else None."""
+    r = int(round(angle_degrees / 90.0))
+    if abs(angle_degrees - r * 90.0) <= tol:
+        return r % 4
+    return None
+
+
+def _quarter_turn_matrix(k, w, h):
+    """Forward 2x3 affine (cv2 convention, pixel-index coordinates) equivalent
+    to rotate_image_k90(image, k) for an input of size (w, h)."""
+    if k == 1:
+        return np.array([[0, 1, 0], [-1, 0, w - 1]], dtype=np.float64)
+    if k == 2:
+        return np.array([[-1, 0, w - 1], [0, -1, h - 1]], dtype=np.float64)
+    if k == 3:
+        return np.array([[0, -1, h - 1], [1, 0, 0]], dtype=np.float64)
+    return np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
+
+
 def rotate_image_any(image, angle_degrees):
     """Rotate `image` by an arbitrary angle (degrees, CCW positive) around its
     own center, expanding the canvas so the ENTIRE rotated image is kept --
     no source content is clipped/blackened (unlike rotate_image_same_size).
+
+    Angles within 0.5 degrees of a multiple of 90 are executed as an exact,
+    lossless pixel rotation (np.rot90) -- identical to rotating the media by
+    hand in an editor -- instead of an interpolated warp.
 
     Returns (rotated_image, M, (orig_w, orig_h)). M is the forward affine
     matrix and (orig_w, orig_h) is the input size; pass both to
@@ -238,12 +444,16 @@ def rotate_image_any(image, angle_degrees):
     scatter black wedges across the reconstructed image.
     """
     (h, w) = image.shape[:2]
+    k = _snap_quarter_turns(angle_degrees)
+    if k is not None:
+        rotated = image.copy() if k == 0 else rotate_image_k90(image, k)
+        return rotated, _quarter_turn_matrix(k, w, h), (w, h)
     cx, cy = w / 2.0, h / 2.0
     M = cv2.getRotationMatrix2D((cx, cy), angle_degrees, 1.0)
     cos = abs(M[0, 0])
     sin = abs(M[0, 1])
-    new_w = int(np.ceil(h * sin + w * cos))
-    new_h = int(np.ceil(h * cos + w * sin))
+    new_w = int(np.ceil(round(h * sin + w * cos, 6)))
+    new_h = int(np.ceil(round(h * cos + w * sin, 6)))
     M[0, 2] += (new_w / 2.0) - cx
     M[1, 2] += (new_h / 2.0) - cy
     rotated = cv2.warpAffine(image, M, (new_w, new_h), borderValue=0.0)
@@ -265,100 +475,160 @@ def unrotate_image_any(image, M, original_size):
 
 
 def estimate_roll_angle(kps):
-    """Signed in-plane roll of a face, in degrees, from its 5-point keypoints.
+    """Signed in-plane roll of a face, in degrees (-180..180], from its
+    5-point keypoints.  0 = upright; positive = the face is rolled clockwise
+    on screen, i.e. rotating the image by that many degrees counter-clockwise
+    (what cv2.getRotationMatrix2D does for positive angles) makes it upright.
 
-    0 = upright (eyes level). Computed from the eye-to-eye line
-    (kps[0] = image-left eye, kps[1] = image-right eye for an upright face,
-    per the insightface 5-point convention). Sufficient for the +-90 degree
-    range that in-plane rotation correction targets here.
+    Two independent cues are combined so one noisy / hidden eye cannot
+    dominate: the eye-to-eye line (kps[0] -> kps[1]; kps[0] is the image-left
+    eye of an upright face) and the face's own vertical axis (mouth centre ->
+    eye centre).  Valid over the full circle, not just +-90 degrees.
     """
-    left_eye, right_eye = kps[0], kps[1]
-    dx = float(right_eye[0] - left_eye[0])
-    dy = float(right_eye[1] - left_eye[1])
-    return float(np.degrees(np.arctan2(dy, dx)))
+    k = np.asarray(kps, dtype=np.float64)
+    ex = k[1][0] - k[0][0]
+    ey = k[1][1] - k[0][1]
+    eye_angle = np.arctan2(ey, ex)
+    if len(k) >= 5:
+        ux = (k[0][0] + k[1][0]) / 2.0 - (k[3][0] + k[4][0]) / 2.0
+        uy = (k[0][1] + k[1][1]) / 2.0 - (k[3][1] + k[4][1]) / 2.0
+        if np.hypot(ex, ey) > 1e-6 and np.hypot(ux, uy) > 1e-6:
+            axis_angle = np.arctan2(ux, -uy)
+            vx = np.cos(eye_angle) + np.cos(axis_angle)
+            vy = np.sin(eye_angle) + np.sin(axis_angle)
+            if np.hypot(vx, vy) > 1e-6:
+                return float(np.degrees(np.arctan2(vy, vx)))
+    return float(np.degrees(eye_angle))
 
 
-def _try_rotation_angle(get_first_face_fn, cutframe, angle):
-    """Cheap trial: rotate `cutframe` by `angle` degrees (same-size, corners
-    may clip) and re-detect a face in it, purely to measure the residual
-    roll. The rotated pixels themselves are discarded -- only used to decide
-    which angle/direction is best during search, never fed into the actual
-    swap pipeline.
+_ANCHOR_MAX_REL_DIST = 0.75   # target face centre must be within this many face-sizes of the anchor
 
-    Returns residual_roll_degrees, or None if no face with valid keypoints
-    is found in the rotated crop.
-    """
-    rotated = rotate_image_same_size(cutframe, angle)
-    face = get_first_face_fn(rotated)
-    if face is None or not hasattr(face, 'kps') or face.kps is None:
+
+def _select_index(bboxes, anchor_xy):
+    """Index of the detection to use: the one nearest `anchor_xy` (and close
+    enough to plausibly BE the anchored face), or -- with no anchor -- the
+    leftmost one, matching get_first_face()."""
+    n = bboxes.shape[0]
+    if n == 0:
         return None
-    return estimate_roll_angle(face.kps)
+    if anchor_xy is None:
+        return int(np.argmin(bboxes[:, 0]))
+    cx = (bboxes[:, 0] + bboxes[:, 2]) / 2.0
+    cy = (bboxes[:, 1] + bboxes[:, 3]) / 2.0
+    d = np.hypot(cx - anchor_xy[0], cy - anchor_xy[1])
+    i = int(np.argmin(d))
+    size = max(bboxes[i, 2] - bboxes[i, 0], bboxes[i, 3] - bboxes[i, 1])
+    return i if d[i] <= size * _ANCHOR_MAX_REL_DIST else None
 
 
-def find_upright_rotation(get_first_face_fn, cutframe, rough_angle, threshold=5.0):
-    """Rotate a padded face cutout so the face is close to upright, re-detecting
-    after each trial rotation so downstream alignment/swap gets accurate
-    landmarks instead of ones estimated from a tilted view (landmark and
-    swap-model quality both degrade the further a face is from upright).
+def _pick_face(get_first_face_fn, img, anchor_xy=None):
+    """Full analysis of `img`, returning the face nearest `anchor_xy` (so a
+    neighbour that happens to be further left in a group shot is never
+    mistaken for the face being straightened), or get_first_face_fn(img) when
+    no anchor is given."""
+    if anchor_xy is None:
+        return get_first_face_fn(img)
+    faces = get_all_faces(img)
+    if not faces:
+        return None
+    i = _select_index(np.array([f.bbox for f in faces], dtype=np.float32), anchor_xy)
+    return None if i is None else faces[i]
 
-    `rough_angle` is an initial roll estimate (degrees), typically taken from
-    a detection on the *un-rotated* frame -- noisy for large tilts, and the
-    sign of "clockwise vs counter-clockwise correction" can be ambiguous
-    depending on caller conventions, so this tries the estimate in both
-    rotational directions and keeps whichever leaves the smallest residual
-    tilt, then takes one more pass to fine-tune (again trying both
-    directions, so a sign mistake anywhere in the estimate can never make
-    things worse than doing nothing). These searching/refinement trials use
-    cheap same-size rotations (rotate_image_same_size) purely to measure
-    residual roll -- their pixels are never used downstream.
 
-    Once the best total angle is found, this performs exactly ONE lossless
-    rotation (rotate_image_any, which expands the canvas so no source
-    content is clipped) and re-detects the face in that -- this is the
-    frame/face actually returned for the swap pipeline to use, and the
-    accompanying M/original_size let the caller undo the rotation later
-    with unrotate_image_any (the exact affine inverse) instead of a second
-    forward-style rotation, which would introduce black wedges.
+def _trial_kps(get_first_face_fn, img, anchor_xy):
+    """Keypoints of the anchored face in `img`.  With the stock detector this
+    runs ONLY the detection network (no landmark / recognition models), which
+    is all an angle trial needs."""
+    if get_first_face_fn is get_first_face:
+        try:
+            bboxes, kpss = get_face_analyser().det_model.detect(img, max_num=0, metric='default')
+        except Exception:
+            return None
+        if bboxes is None or kpss is None or bboxes.shape[0] == 0:
+            return None
+        i = _select_index(bboxes, anchor_xy)
+        return None if i is None else kpss[i]
+    face = _pick_face(get_first_face_fn, img, anchor_xy)
+    if face is None or getattr(face, 'kps', None) is None:
+        return None
+    return face.kps
+
+
+def find_upright_rotation(get_first_face_fn, cutframe, rough_angle, threshold=5.0, anchor=None, max_refinements=3):
+    """Rotate a padded face cutout so the face is upright, re-detecting after
+    each trial rotation so downstream alignment/swap gets accurate landmarks
+    instead of ones estimated from a tilted view.
+
+    `rough_angle` is the face's roll (degrees) measured on the un-rotated
+    frame.  It is tried first; if the re-detected face is still more than
+    `threshold` degrees off, the opposite sign is tried too (so a sign
+    mistake can never make things worse than doing nothing) and the angle is
+    then refined from the measured residual, up to `max_refinements` rounds.
+    Every trial is a real, lossless-canvas rotation (rotate_image_any, which
+    is an exact pixel rotation for multiples of 90 degrees) of the same
+    pixels that are returned, so the winning trial is reused as-is.
+
+    `anchor` is the target face's centre in `cutframe` coordinates.  When
+    given, the face nearest it is used in every re-detection rather than the
+    leftmost face of the cutout -- essential in group shots where a
+    neighbour's face falls inside the padded crop.
 
     Returns (rotated_frame, face, M, original_size, total_angle_applied), or
-    (None, None, None, None, 0.0) if the face is already upright or no
-    candidate rotation yields a usable detection (caller should fall back
-    to the un-rotated frame in that case).
+    (None, None, None, None, 0.0) if the face is already upright, if no
+    candidate rotation yields a usable detection, or if rotating would not
+    beat the unrotated roll (caller should fall back to the un-rotated frame).
     """
     if rough_angle is None or abs(rough_angle) < threshold:
         return None, None, None, None, 0.0
 
-    best = None  # (abs_residual, angle, residual)
-    for candidate in (rough_angle, -rough_angle):
-        residual = _try_rotation_angle(get_first_face_fn, cutframe, candidate)
-        if residual is None:
-            continue
-        if best is None or abs(residual) < best[0]:
-            best = (abs(residual), candidate, residual)
+    def anchor_in(M):
+        if anchor is None:
+            return None
+        return (M[0, 0] * anchor[0] + M[0, 1] * anchor[1] + M[0, 2],
+                M[1, 0] * anchor[0] + M[1, 1] * anchor[1] + M[1, 2])
 
-    if best is None:
+    cache = {}
+
+    def trial(angle):
+        angle = ((float(angle) + 180.0) % 360.0) - 180.0
+        key = round(angle, 1)
+        if key not in cache:
+            rotated, M, size = rotate_image_any(cutframe, angle)
+            kps = _trial_kps(get_first_face_fn, rotated, anchor_in(M))
+            residual = None if kps is None else estimate_roll_angle(kps)
+            cache[key] = (angle, residual, rotated, M, size)
+        return cache[key]
+
+    best = [None]   # (abs_residual, angle, residual, key)
+
+    def consider(angle):
+        t = trial(angle)
+        if t[1] is None:
+            return
+        if best[0] is None or abs(t[1]) < best[0][0]:
+            best[0] = (abs(t[1]), t[0], t[1], round(t[0], 1))
+
+    consider(rough_angle)
+    if best[0] is None or best[0][0] >= threshold:
+        consider(-rough_angle)
+    for _ in range(max_refinements):
+        if best[0] is None or best[0][0] < threshold:
+            break
+        before, ang, res, _k = best[0]
+        consider(ang + res)
+        consider(ang - res)
+        if best[0][0] > before - 0.5:
+            break
+
+    if best[0] is None or best[0][0] >= abs(rough_angle):
         return None, None, None, None, 0.0
 
-    _, angle, residual = best
-
-    if threshold <= abs(residual) < 45.0:
-        refined = None
-        for correction in (residual, -residual):
-            trial_angle = angle + correction
-            r_residual = _try_rotation_angle(get_first_face_fn, cutframe, trial_angle)
-            if r_residual is None:
-                continue
-            if refined is None or abs(r_residual) < abs(refined[1]):
-                refined = (trial_angle, r_residual)
-        if refined is not None and abs(refined[1]) < abs(residual):
-            angle = refined[0]
-
-    rotated, M, original_size = rotate_image_any(cutframe, angle)
-    face = get_first_face_fn(rotated)
-    if face is None or not hasattr(face, 'kps') or face.kps is None:
+    _, _, _, key = best[0]
+    angle, _res, rotated, M, size = cache[key]
+    face = _pick_face(get_first_face_fn, rotated, anchor_in(M))
+    if face is None or getattr(face, 'kps', None) is None:
         return None, None, None, None, 0.0
-
-    return rotated, face, M, original_size, angle
+    return rotated, face, M, size, angle
 
 
 # alignment code from insightface https://github.com/deepinsight/insightface/blob/master/python-package/insightface/utils/face_align.py

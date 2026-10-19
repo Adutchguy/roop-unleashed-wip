@@ -283,7 +283,7 @@ def faceswap_tab():
                 no_face_action = gr.Dropdown(choices=no_face_choices, value=roop.globals.CFG.no_face_action, label="Action on no face detected", interactive=True)
             with gr.Column(scale=1):
                 with gr.Group():
-                    autorotate = gr.Checkbox(label="Auto rotate tilted Faces (any angle)", value=roop.globals.CFG.autorotate_faces)
+                    autorotate = gr.Checkbox(label="Auto rotate tilted Faces (any angle)", value=roop.globals.CFG.autorotate_faces, info="Finds sideways / upside-down / tilted faces on every frame and swaps them upright, as if the media had been rotated first. Adds detection time per frame.")
                     roop.globals.skip_audio = gr.Checkbox(label="Skip audio", value=roop.globals.CFG.skip_audio)
                     roop.globals.keep_frames = gr.Checkbox(label="Keep Frames (relevant only when extracting frames)", value=roop.globals.CFG.keep_frames)
                     roop.globals.wait_after_extraction = gr.Checkbox(label="Wait for user key press before creating video ", value=roop.globals.CFG.wait_after_extraction)
@@ -778,7 +778,7 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
     import base64 as _b64
     import cv2 as _cv2
     import numpy as _np
-    from roop.face_util import (get_first_face, get_all_faces, align_crop,
+    from roop.face_util import (get_first_face, get_all_faces, get_first_face_auto, get_all_faces_auto, align_crop,
                                  estimate_roll_angle, find_upright_rotation, rotate_image_any)
     import roop.globals
 
@@ -824,7 +824,7 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
         the source and the swap crops without any independent recomputation."""
         if frame is None:
             return None, None, None
-        face = target_face if target_face is not None else get_first_face(frame)
+        face = target_face if target_face is not None else get_first_face_auto(frame)
         if face is None or not hasattr(face, 'kps') or face.kps is None:
             return None, None, None
         if roop.globals.autorotate_faces:
@@ -834,7 +834,8 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
             # expands its own canvas so no content is clipped regardless.
             offs = int(max(x1 - x0, y1 - y0) * 0.4)
             cut = _cutout(frame, x0 - offs, y0 - offs, x1 + offs, y1 + offs)
-            rot, rotface, _M, _size, angle = find_upright_rotation(get_first_face, cut, rough_angle)
+            anchor = ((x0 + x1) / 2.0 - max(0, x0 - offs), (y0 + y1) / 2.0 - max(0, y0 - offs))
+            rot, rotface, _M, _size, angle = find_upright_rotation(get_first_face, cut, rough_angle, anchor=anchor)
             if rot is not None:
                 # Capture loop variables explicitly so the closure is correct.
                 _x0, _y0, _x1, _y1, _offs, _angle = x0, y0, x1, y1, offs, angle
@@ -871,7 +872,7 @@ def get_face_crop_for_mask(frame_num, files, faceset_index=None, target_face_ind
     else:
         current_frame = get_image_frame(filename)
 
-    all_detected = get_all_faces(current_frame) if current_frame is not None else []
+    all_detected = (get_all_faces_auto(current_frame) or []) if current_frame is not None else []
     detected_count = str(max(1, len(all_detected)))
 
     # --- Build crops for EVERY detected target face (raw + swapped) ---

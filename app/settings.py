@@ -41,6 +41,9 @@ class Settings:
         self.max_face_distance = self.default_get(data, 'max_face_distance', 0.85)
         # Faceswap session settings
         self.face_detection_mode = self.default_get(data, 'face_detection_mode', 'All faces')
+        # Gender-based selection modes were removed; map legacy saved values to a valid choice
+        if self.face_detection_mode in ('All female', 'All male'):
+            self.face_detection_mode = 'All faces'
         self.num_swap_steps = self.default_get(data, 'num_swap_steps', 1)
         self.selected_enhancer = self.default_get(data, 'selected_enhancer', 'GPEN')
         self.subsample_upscale = self.default_get(data, 'subsample_upscale', '256px')

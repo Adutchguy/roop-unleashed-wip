@@ -195,8 +195,6 @@ class ProcessMgr():
         devicename = get_device()
 
         roop.globals.g_desired_face_analysis = ["landmark_3d_68", "landmark_2d_106", "detection", "recognition"]
-        if options.swap_mode == "all_female" or options.swap_mode == "all_male":
-            roop.globals.g_desired_face_analysis.append("genderage")
 
         for p in self.processors:
             newp = next((x for x in options.processors.keys() if x == p.processorname), None)
@@ -705,13 +703,6 @@ class ProcessMgr():
                                 num_faces_found += 1
                             if num_faces_found == num_targetfaces:
                                 break
-
-            elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
-                gender = 'F' if self.options.swap_mode == "all_female" else 'M'
-                for face in faces:
-                    if face.sex == gender:
-                        num_faces_found += 1
-                        temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
 
             for face in faces:
                 del face

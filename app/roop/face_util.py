@@ -135,7 +135,7 @@ def _unrotate_bbox_k90(bbox, k, orig_w, orig_h):
 
 def _unrotate_face_k90(face, k, orig_w, orig_h):
     """In-place: express every spatial attribute of `face` in original-frame
-    coordinates.  Embedding / gender / age are rotation independent."""
+    coordinates.  Embedding is rotation independent."""
     face.bbox = _unrotate_bbox_k90(face.bbox, k, orig_w, orig_h)
     if face.kps is not None:
         face.kps = _unrotate_points_k90(face.kps, k, orig_w, orig_h)

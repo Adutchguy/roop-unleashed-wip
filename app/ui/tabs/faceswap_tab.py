@@ -27,7 +27,7 @@ is_processing = False
 
 list_files_process : list[ProcessEntry] = []
 no_face_choices = ["Use untouched original frame","Retry rotated", "Skip Frame", "Skip Frame if no similar face", "Use last swapped"]
-swap_choices = ["First found", "All input faces", "All female", "All male", "All faces", "Selected face"]
+swap_choices = ["First found", "All input faces", "All faces", "Selected face"]
 
 current_video_fps = 50
 
@@ -2367,10 +2367,6 @@ def translate_swap_mode(dropdown_text):
         return "first"
     elif dropdown_text == "All input faces":
         return "all_input"
-    elif dropdown_text == "All female":
-        return "all_female"
-    elif dropdown_text == "All male":
-        return "all_male"
     
     return "all"
 

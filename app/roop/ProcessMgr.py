@@ -5,7 +5,7 @@ import psutil
 
 from roop.ProcessOptions import ProcessOptions
 
-from roop.face_util import get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, unrotate_image_any, estimate_roll_angle, find_upright_rotation
+from roop.face_util import get_first_face, get_all_faces, get_first_face_auto, get_all_faces_auto, rotate_anticlockwise, rotate_clockwise, clamp_cut_values, unrotate_image_any, estimate_roll_angle, find_upright_rotation
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
 import roop.vr_util as vr
 
@@ -195,8 +195,6 @@ class ProcessMgr():
         devicename = get_device()
 
         roop.globals.g_desired_face_analysis = ["landmark_3d_68", "landmark_2d_106", "detection", "recognition"]
-        if options.swap_mode == "all_female" or options.swap_mode == "all_male":
-            roop.globals.g_desired_face_analysis.append("genderage")
 
         for p in self.processors:
             newp = next((x for x in options.processors.keys() if x == p.processorname), None)
@@ -650,7 +648,8 @@ class ProcessMgr():
         num_faces_found = 0
 
         if self.options.swap_mode == "first":
-            face = get_first_face(frame)
+            # get_*_auto: any-orientation detection when 'Auto rotate tilted Faces' is on
+            face = get_first_face_auto(frame)
             # Temporal hint: if detection failed, retry in the last-known face region
             if face is None and self.last_found_bboxes is not None:
                 face = _detect_face_in_roi(frame, self.last_found_bboxes[0])
@@ -662,7 +661,7 @@ class ProcessMgr():
             del face
 
         else:
-            faces = get_all_faces(frame)
+            faces = get_all_faces_auto(frame)
             # Temporal hint: if detection failed, retry each last-known face region
             if faces is None and self.last_found_bboxes is not None:
                 recovered = []
@@ -704,13 +703,6 @@ class ProcessMgr():
                                 num_faces_found += 1
                             if num_faces_found == num_targetfaces:
                                 break
-
-            elif self.options.swap_mode == "all_female" or self.options.swap_mode == "all_male":
-                gender = 'F' if self.options.swap_mode == "all_female" else 'M'
-                for face in faces:
-                    if face.sex == gender:
-                        num_faces_found += 1
-                        temp_frame = self.process_face(self.options.selected_index, face, temp_frame)
 
             for face in faces:
                 del face
@@ -822,7 +814,11 @@ class ProcessMgr():
             # expands its own canvas so no content is clipped regardless.
             offs = int(max(width, height) * 0.4)
             rotcutframe, startX, startY, endX, endY = self.cutout(frame, startX - offs, startY - offs, endX + offs, endY + offs)
-            rotated, rotface, rotation_M, rotation_orig_size, _angle = find_upright_rotation(get_first_face, rotcutframe, rough_angle)
+            # Anchor on THIS face's centre (in cutout coords) so a neighbour that
+            # falls inside the padded crop is never mistaken for it on re-detection.
+            anchor = ((target_face["bbox"][0] + target_face["bbox"][2]) / 2.0 - startX,
+                      (target_face["bbox"][1] + target_face["bbox"][3]) / 2.0 - startY)
+            rotated, rotface, rotation_M, rotation_orig_size, _angle = find_upright_rotation(get_first_face, rotcutframe, rough_angle, anchor=anchor)
             if rotated is not None:
                 saved_frame = frame.copy()
                 frame = rotated

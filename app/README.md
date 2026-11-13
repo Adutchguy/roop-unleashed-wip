@@ -12,7 +12,7 @@ Uncensored Deepfakes for images and videos without training and an easy-to-use G
 
 - Platform-independent browser GUI with Carbon Dark theme
 - Selection of multiple input/output faces in one go
-- Many different swapping modes: first detected, face selections, by gender, all faces
+- Many different swapping modes: first detected, face selections, all faces
 - Batch processing of images and videos
 - Advanced masking with zoom/pan editor and side-by-side live preview
   - Face-tracking manual mask that follows the face across video frames
